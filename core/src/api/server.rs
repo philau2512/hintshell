@@ -46,13 +46,13 @@ impl HintShellServer {
     }
 
     /// Load default-commands.json at runtime.
-    /// Search order: next to DB file, next to binary, embedded fallback.
+    /// Search order: next to DB, ~/.hintshell/, next to binary, embedded fallback.
     fn load_defaults_json(db_path: &PathBuf) -> String {
         // Embedded fallback (always available)
         const EMBEDDED: &str = include_str!("../../default-commands.json");
         let filename = "default-commands.json";
 
-        // 1. Next to DB file (~/.hintshell/default-commands.json)
+        // 1. Next to DB file (AppData/Local/HintShell/)
         if let Some(db_dir) = db_path.parent() {
             let candidate = db_dir.join(filename);
             if candidate.exists() {
@@ -63,7 +63,18 @@ impl HintShellServer {
             }
         }
 
-        // 2. Next to the running binary
+        // 2. ~/.hintshell/ (where `hintshell init` copies config files)
+        if let Some(home) = dirs::home_dir() {
+            let candidate = home.join(".hintshell").join(filename);
+            if candidate.exists() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    info!("Loaded defaults from: {}", candidate.display());
+                    return content;
+                }
+            }
+        }
+
+        // 3. Next to the running binary
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
                 let candidate = exe_dir.join(filename);
@@ -76,7 +87,7 @@ impl HintShellServer {
             }
         }
 
-        // 3. Fallback to embedded
+        // 4. Fallback to embedded
         info!("Using embedded default commands");
         EMBEDDED.to_string()
     }

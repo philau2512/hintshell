@@ -1,31 +1,38 @@
-# Script to reload HintShell module
+# Script to reload HintShell module (dev mode)
+# Copies fresh binaries from target/release/ into the local module directory
 
 Write-Host "🔄 Reloading HintShell..." -ForegroundColor Cyan
 
+$moduleDir = ".\integrations\powershell\HintShellModule"
+$releaseBin = ".\target\release"
+
 # 1. Stop daemon if running
 Write-Host "Stopping daemon..." -ForegroundColor Yellow
-
-# Try stopping via new CLI name
-$cliPath = ".\integrations\powershell\HintShellModule\hintshell.exe"
+$cliPath = Join-Path $moduleDir "hintshell.exe"
 if (Test-Path $cliPath) {
-    & $cliPath stop
+    & $cliPath stop 2>$null
     Start-Sleep -Milliseconds 500
 }
+# Also kill any stray daemon processes
+Get-Process hintshell-core -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # 2. Remove module if loaded
 Write-Host "Removing old module..." -ForegroundColor Yellow
 Remove-Module HintShellModule -ErrorAction SilentlyContinue
-Remove-Module ShellMindModule -ErrorAction SilentlyContinue
 
-# 2.5 Copy default-commands.json to module directory (for daemon seeding)
-$defaultsJson = ".\core\default-commands.json"
-$moduleDir = ".\integrations\powershell\HintShellModule"
-if (Test-Path $defaultsJson) {
-    if (-not (Test-Path $moduleDir)) { New-Item -ItemType Directory -Path $moduleDir -Force }
-    Copy-Item $defaultsJson $moduleDir -Force
+# 3. Copy fresh binaries + data from build output
+Write-Host "Copying fresh binaries..." -ForegroundColor Yellow
+if (Test-Path $releaseBin) {
+    $coreBin = Join-Path $releaseBin "hintshell-core.exe"
+    $cliBin = Join-Path $releaseBin "hintshell.exe"
+    if (Test-Path $coreBin) { Copy-Item $coreBin $moduleDir -Force }
+    if (Test-Path $cliBin) { Copy-Item $cliBin $moduleDir -Force }
 }
+# Copy default-commands.json
+$defaultsJson = ".\core\default-commands.json"
+if (Test-Path $defaultsJson) { Copy-Item $defaultsJson $moduleDir -Force }
 
-# 3. Import module
+# 4. Import module
 Write-Host "Importing module..." -ForegroundColor Yellow
 $modulePsm = Join-Path $moduleDir "HintShellModule.psm1"
 if (Test-Path $modulePsm) {
@@ -35,7 +42,7 @@ if (Test-Path $modulePsm) {
     return
 }
 
-# 4. Start HintShell
+# 5. Start HintShell
 Write-Host "Starting HintShell..." -ForegroundColor Yellow
 if (Get-Command Start-HintShell -ErrorAction SilentlyContinue) {
     Start-HintShell
