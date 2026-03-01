@@ -1,6 +1,6 @@
 {
   "name": "hintshell",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Next-gen AI-ready real-time command suggestions for your terminal. Smart, context-aware autocomplete for PowerShell, Bash, and Zsh.",
   "keywords": [
     "ai-shell",
