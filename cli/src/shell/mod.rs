@@ -147,18 +147,37 @@ impl Shell {
     }
 }
 
-/// Remove binaries and modules from ~/.hintshell/
 pub fn uninstall_assets() -> Result<(), String> {
     let home = hintshell_home();
     let bin_dir = home.join("bin");
     let module_dir = home.join("module");
 
-    if bin_dir.exists() {
-        fs::remove_dir_all(&bin_dir).map_err(|e| e.to_string())?;
-    }
     if module_dir.exists() {
-        fs::remove_dir_all(&module_dir).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(&module_dir).map_err(|e| format!("Remove module: {}", e))?;
     }
+
+    if bin_dir.exists() {
+        if let Err(_e) = fs::remove_dir_all(&bin_dir) {
+            #[cfg(windows)]
+            {
+                // Self-deleting trick on Windows
+                let path_str = bin_dir.to_string_lossy().to_string();
+                let cmd_str = format!("ping 127.0.0.1 -n 2 > nul & rmdir /s /q \"{}\"", path_str);
+                
+                let _ = std::process::Command::new("cmd")
+                    .arg("/c")
+                    .arg(&cmd_str)
+                    .spawn();
+                
+                println!("⏳ Scheduled binary removal after termination...");
+            }
+            #[cfg(unix)]
+            {
+                return Err(format!("Remove bin: {}", _e));
+            }
+        }
+    }
+
 
     Ok(())
 }
