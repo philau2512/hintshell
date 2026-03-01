@@ -1,6 +1,6 @@
 {
   "name": "hintshell",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-Powered Terminal Auto-Suggestion Engine — learns your command history and suggests commands in real-time",
   "keywords": [
     "terminal",
