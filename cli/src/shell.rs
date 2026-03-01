@@ -222,7 +222,9 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
 
     // 1. Copy hintshell binary itself
     let hs_name = if cfg!(windows) { "hintshell.exe" } else { "hintshell" };
-    fs::copy(bin_path, bin_dir.join(hs_name))
+    let dest_hs = bin_dir.join(hs_name);
+    let _ = fs::remove_file(&dest_hs); // Remove first to avoid "Text file busy" on Linux
+    fs::copy(bin_path, &dest_hs)
         .map_err(|e| format!("Copy hintshell failed: {}", e))?;
 
     // 1b. Copy hs shorthand alias
@@ -230,7 +232,9 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = bin_path.parent() {
         let hs_src = parent.join(hs_short);
         if hs_src.exists() {
-            fs::copy(&hs_src, bin_dir.join(hs_short))
+            let dest_short = bin_dir.join(hs_short);
+            let _ = fs::remove_file(&dest_short);
+            fs::copy(&hs_src, &dest_short)
                 .map_err(|e| format!("Copy hs failed: {}", e))?;
         }
     }
@@ -240,7 +244,9 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = bin_path.parent() {
         let core_src = parent.join(core_name);
         if core_src.exists() {
-            fs::copy(&core_src, bin_dir.join(core_name))
+            let dest_core = bin_dir.join(core_name);
+            let _ = fs::remove_file(&dest_core);
+            fs::copy(&core_src, &dest_core)
                 .map_err(|e| format!("Copy core failed: {}", e))?;
         }
     }

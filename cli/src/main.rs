@@ -108,6 +108,9 @@ async fn main() {
                         println!("🧠 HintShell Daemon v{}", status.version);
                         println!("   Commands in history: {}", status.total_commands);
                         println!("   Uptime: {}s", status.uptime_seconds);
+
+                        // Check for updates from npm registry
+                        check_npm_update(&status.version);
                     }
                 }
                 Err(_) => println!("❌ Daemon is not running."),
@@ -191,7 +194,11 @@ async fn main() {
                     Err(e) => println!("ℹ️  {} → {}", name, e),
                 }
             }
-            println!("\n🚀 Done! Please restart your shell.");
+
+            // Auto-start daemon after init
+            println!("\n🚀 Starting daemon...");
+            start_daemon();
+            println!("Done! Please restart your shell to activate hooks.");
         }
         Commands::Hook { shell } => {
             if let Some(s) = shell::Shell::from_str(&shell) {
@@ -218,6 +225,10 @@ fn start_daemon() {
     }
 
     let mut cmd = Command::new(&exe_path);
+
+    // Redirect stdout/stderr to null so daemon logs don't pollute the terminal
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
     
     #[cfg(windows)]
     cmd.creation_flags(0x00000008); // DETACHED_PROCESS
@@ -272,4 +283,34 @@ where
         .map_err(|e| format!("Read failed: {}", e))?;
 
     serde_json::from_str(&response_line).map_err(|e| format!("Invalid response: {}", e))
+}
+
+fn check_npm_update(local_version: &str) {
+    // Quick check — timeout after 2 seconds
+    let resp = ureq::get("https://registry.npmjs.org/hintshell")
+        .timeout(std::time::Duration::from_secs(2))
+        .call();
+
+    if let Ok(resp) = resp {
+        if let Ok(body) = resp.into_string() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                // Try beta tag first, then latest
+                let latest = json["dist-tags"]["beta"]
+                    .as_str()
+                    .or_else(|| json["dist-tags"]["latest"].as_str());
+
+                if let Some(latest_ver) = latest {
+                    if latest_ver != local_version {
+                        println!();
+                        println!("\x1b[33m🆙 Update available: {} → {}\x1b[0m", local_version, latest_ver);
+                        println!("   Run \x1b[36mhs update\x1b[0m to upgrade.");
+                    } else {
+                        println!();
+                        println!("\x1b[32m✅ You are using the latest version.\x1b[0m");
+                    }
+                }
+            }
+        }
+    }
+    // Silently ignore network errors
 }
