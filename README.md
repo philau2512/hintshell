@@ -66,8 +66,8 @@ hintshell init
 Nếu bạn muốn tự build từ mã nguồn:
 
 ```bash
-git clone https://github.com/conruabien/ShellMind.git
-cd ShellMind
+git clone https://github.com/philau2512/hintshell.git
+cd hintshell
 cargo build --release
 ./target/release/hintshell init
 ```
