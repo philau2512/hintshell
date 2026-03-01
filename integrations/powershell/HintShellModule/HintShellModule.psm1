@@ -257,7 +257,21 @@ function Invoke-HSWrapper {
             Write-Host "🔄 Updating HintShell via npm..." -ForegroundColor Cyan
             try {
                 npm install -g hintshell@beta
-                Write-Host "✅ Update complete. Restart terminal to apply changes." -ForegroundColor Green
+                Write-Host "📦 Re-initializing..." -ForegroundColor Cyan
+                # Find the CLI binary from npm global path
+                $npmGlobalBin = (npm root -g) -replace 'node_modules$', 'node_modules\hintshell\vendor'
+                $exeInit = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+                $initPath = Join-Path $npmGlobalBin $exeInit
+                if (Test-Path $initPath) {
+                    & $initPath init
+                } else {
+                    Write-Host "⚠️ Could not find binary to run init. Please run 'hintshell init' manually." -ForegroundColor Yellow
+                }
+                # Restart daemon
+                Write-Host "🔄 Restarting daemon..." -ForegroundColor Cyan
+                Stop-HintShell
+                Start-HintShell -Force
+                Write-Host "✅ Update complete!" -ForegroundColor Green
             } catch {
                 Write-Error "❌ Update failed. Do you have npm installed?"
             }
@@ -279,11 +293,19 @@ function Invoke-HSWrapper {
             $cliPath = Join-Path $modulePath $exeName
             if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
             
+            # Filter out empty args to avoid 'unexpected argument' error
+            $cleanArgs = @()
+            if ($Args) { $cleanArgs = @($Args | Where-Object { $_ -ne '' -and $null -ne $_ }) }
+
             if (Test-Path $cliPath) {
-                if ($Command) { & $cliPath $Command $Args } else { & $cliPath }
+                if ($Command) {
+                    if ($cleanArgs.Count -gt 0) { & $cliPath $Command @cleanArgs } else { & $cliPath $Command }
+                } else { & $cliPath }
             } else {
                 Write-Warning "HintShell binary not found locally."
-                if ($Command) { & $exeName $Command $Args } else { & $exeName }
+                if ($Command) {
+                    if ($cleanArgs.Count -gt 0) { & $exeName $Command @cleanArgs } else { & $exeName $Command }
+                } else { & $exeName }
             }
         }
     }
