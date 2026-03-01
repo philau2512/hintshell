@@ -46,12 +46,9 @@ pub fn hook_script() -> String {
         "\n_hintshell_precmd() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),
         "    local last_cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n".to_string(),
-        "    if [[ -n \"$last_cmd\" && \"$last_cmd\" != \"$_HS_LAST\" ]]; then\n".to_string(),
-        "        _HS_LAST=\"$last_cmd\"\n".to_string(),
-        "        (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh >/dev/null 2>&1 &)\n".to_string(),
-        "    fi\n".to_string(),
+        "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh >/dev/null 2>&1 &)\n".to_string(),
         "}\n".to_string(),
-        "precmd_functions+=(_hintshell_precmd)\n".to_string(),
+        "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),
     ].concat()
 }
 
