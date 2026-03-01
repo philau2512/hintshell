@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  HintShell is <strong>not</strong> a terminal emulator. It's a lightweight engine that <strong>embeds into your existing shell</strong> — PowerShell, Bash, or Zsh — and provides real-time command suggestions as you type. Think of it like autocomplete on steroids: a scrollable suggestion list with fuzzy matching, frequency ranking, and inline command descriptions.
+  HintShell is <strong>not</strong> a terminal emulator. It's a lightweight engine that <strong>embeds into your existing shell</strong> — PowerShell, Bash, or Zsh — and provides real-time command suggestions as you type.
 </p>
 
 ---
@@ -34,143 +34,83 @@ Most shells offer basic, single-line autocomplete. HintShell replaces that with 
 | **600+ built-in commands** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Works with any terminal** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-> **TL;DR** — Other shells give you one dim ghost suggestion. HintShell gives you a full list, ranked by how often you use each command, with a description of what every command does.
-
 ---
 
-## 📸 How It Looks
+## 🚀 Installation (Recommended)
 
-```
-PS> git ch
-  ┌───────────────────────────────────────────┐
-  │ > git checkout main          (12x)  [1/30]│
-  │   git cherry-pick             (3x)  [2/30]│
-  │   git checkout -b             (2x)  [3/30]│
-  │   git checkout --             (1x)  [4/30]│
-  │   git cherry-pick --abort     (1x)  [5/30]│
-  │ 💡 Switch branches or restore working tree│
-  └───────────────────────────────────────────┘
-```
+Follow these steps in order to get HintShell running on your machine.
 
-- **↑ / ↓** — Navigate the list
-- **Tab** — Accept the selected suggestion
-- **Enter** — Execute the current command line
-- **Esc** — Dismiss the panel
+### 1. Install Dependencies (macOS / Linux only)
+HintShell uses `fzf` to render the suggestion picker on Unix systems.
+- **macOS**: `brew install fzf`
+- **Linux (Ubuntu/Debian)**: `sudo apt install fzf`
+- **Windows**: No dependencies needed.
 
----
-
-## 🚀 Installation
-
-### Option A — via NPM (Recommended)
-
-Works on **Windows**, **macOS**, and **Linux**. Automatically downloads the correct binary for your platform.
-
+### 2. Install HintShell
+Install via NPM to get the latest pre-built binaries for your platform:
 ```bash
 npm install -g hintshell
-hintshell init
 ```
 
-Then **restart your terminal** (or reload your shell config):
-
+### 3. Initialize Shell Integration
+Run the init command to automatically configure your shell (`.zshrc`, `.bashrc`, or PowerShell profile):
 ```bash
-# PowerShell
-. $PROFILE
+hs init
+```
+
+### 4. Restart Terminal
+Restart your terminal or reload your shell config to activate the hooks:
+```bash
+# Zsh
+source ~/.zshrc
 
 # Bash
 source ~/.bashrc
 
-# Zsh
-source ~/.zshrc
-```
-
-### Option B — Download from GitHub Releases
-
-Go to [**Releases**](https://github.com/philau2512/hintshell/releases), download the archive for your OS, extract it, and run:
-
-```bash
-hintshell init
-```
-
-### Option C — Build from Source
-
-Requires [Rust](https://rustup.rs/).
-
-```bash
-git clone https://github.com/philau2512/hintshell.git
-cd hintshell
-cargo build --release
-./target/release/hintshell init    # Linux / macOS
-.\target\release\hintshell.exe init  # Windows
-```
-
----
-
-## 🗑️ Uninstall
-
-### If installed via NPM
-
-```bash
-npm uninstall -g hintshell
-```
-
-### Complete cleanup (all platforms)
-
-Remove the HintShell data directory and any shell configuration lines it added:
-
-**Windows (PowerShell):**
-```powershell
-# 1. Stop the daemon
-hs stop
-
-# 2. Remove data directory
-Remove-Item -Recurse -Force "$HOME\.hintshell"
-
-# 3. Edit your PowerShell profile and remove the HintShell lines
-notepad $PROFILE
-# Delete lines related to "HintShell" or "Import-Module HintShellModule"
-```
-
-**macOS / Linux:**
-```bash
-# 1. Stop the daemon
-hs stop
-
-# 2. Remove data directory
-rm -rf ~/.hintshell
-
-# 3. Remove the hook line from your shell config
-# For Bash: edit ~/.bashrc
-# For Zsh:  edit ~/.zshrc
-# Delete the line: eval "$(hintshell hook bash)"  (or zsh)
+# PowerShell
+. $PROFILE
 ```
 
 ---
 
 ## 📖 Usage
 
-### CLI Commands
+### PowerShell (Windows/Unix)
+**Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type. 
+- **↑ / ↓** : Navigate
+- **Tab** : Accept
+- **Esc** : Close
+
+### Zsh / Bash (macOS/Linux)
+**Tab-to-Suggest**: To avoid conflicts with `zsh-autosuggestions`, HintShell activates when you press **Tab**.
+- **Type `git ` + Tab** : Opens a fuzzy picker with frequencies and descriptions.
+- **Enter** : Select and fill the command line.
+
+---
+
+## 🗑️ Uninstallation
+
+If you need to remove HintShell, it now comes with a clean uninstaller that handles everything for you:
 
 ```bash
-hs start       # Start the HintShell daemon
-hs stop        # Stop the daemon
-hs status      # Check daemon status
-hs init        # Set up shell integration (run once)
+# 1. Run the official uninstaller
+hs uninstall
+
+# 2. (Optional) Remove the NPM package
+npm uninstall -g hintshell
 ```
+*Note: `hs uninstall` stops the daemon, removes hook lines from your shell configs, and deletes binaries from `~/.hintshell/bin`, but keeps your history database (`history.db`) safe.*
 
-### PowerShell — Auto-Suggest Overlay
+---
 
-Just type — suggestions appear automatically as a floating panel beneath your cursor.
-
-### Bash / Zsh — Tab to Suggest
-
-Type a partial command, then press **Tab** to open the suggestion picker (requires `fzf`).
+## 🏗️ CLI Reference
 
 ```bash
-$ docker ↹
-🧠 HintShell>
-  docker compose up -d
-  docker ps -a
-  docker build -t myapp .
+hs status      # Check if the daemon is running and see stats
+hs start       # Manually start the daemon
+hs stop        # Stop the daemon
+hs update      # Check for new versions
+hs uninstall   # Completely remove shell integration and binaries
 ```
 
 ---
@@ -201,72 +141,13 @@ HintShell is a **client-daemon** system. It does **not** replace your terminal o
 └─────────────────────────────────┘
 ```
 
-| Component | Role |
-|---|---|
-| `hs` / `hintshell` | CLI client — sends queries over IPC |
-| `hintshell-core` | Background daemon — stores history, runs the suggestion engine (SQLite + fuzzy matching) |
-| Shell Hook | Thin integration layer — captures keystrokes and renders the suggestion UI |
-
-**IPC:** Named Pipe on Windows, Unix Domain Socket on Linux/macOS.
-
 ---
 
-## 📁 File Structure
+## 🤝 Contributing & License
 
-```
-~/.hintshell/
-├── bin/
-│   ├── hintshell        # CLI binary
-│   ├── hintshell-core   # Daemon binary
-│   └── hs               # CLI alias
-├── module/
-│   └── HintShellModule/ # PowerShell module
-├── default-commands.json # 600+ built-in commands with descriptions
-└── history.db           # SQLite — your command history & frequencies
-```
+Contributions are welcome! Built with 🦀 Rust for speed and safety. 
+Licensed under **MIT**.
 
----
-
-## ✨ Key Features
-
-- **🔍 Prefix Matching** — Type `git` and instantly see all commands starting with `git`, ranked by your usage frequency.
-- **📊 Frequency Ranking** — Commands you use most float to the top.
-- **💡 Command Descriptions** — See what each command does before you run it. 600+ commands pre-loaded across Git, Docker, NPM, Python, Kubernetes, Terraform, Cargo, and more.
-- **🖥️ Cross-Platform** — Windows, macOS, Linux. One tool, every OS.
-- **🐚 Multi-Shell** — PowerShell, Bash, Zsh. Same experience everywhere.
-- **⚡ Built in Rust** — Fast startup, tiny memory footprint, no runtime dependencies.
-- **🔒 Local & Private** — Everything stays on your machine. No cloud, no telemetry.
-
----
-
-## 🛠️ Development
-
-```bash
-# Debug build
-cargo build
-
-# Run CLI directly
-cargo run --bin hintshell -- status
-
-# Run daemon directly
-cargo run --bin hintshell-core
-
-# Quick reload (PowerShell)
-.\reload-hintshell.ps1
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to open issues or submit pull requests.
-
-## 📄 License
-
-[MIT](LICENSE)
-
----
-
-<p align="center">
+<p align="left">
   <strong>Stop memorizing commands. Let HintShell remember for you.</strong>
 </p>
