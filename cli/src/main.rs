@@ -97,7 +97,7 @@ async fn main() {
                         println!("❌ Error: {}", resp.error.unwrap_or_default());
                     }
                 }
-                Err(e) => println!("❌ Cannot connect to daemon: {}", e),
+                Err(_) => println!("ℹ️  Daemon is not running."),
             }
         }
         Commands::Status => {
@@ -110,7 +110,7 @@ async fn main() {
                         println!("   Uptime: {}s", status.uptime_seconds);
                     }
                 }
-                Err(e) => println!("❌ Daemon is not running: {}", e),
+                Err(_) => println!("❌ Daemon is not running."),
             }
         }
         Commands::Suggest { input, limit, format } => {

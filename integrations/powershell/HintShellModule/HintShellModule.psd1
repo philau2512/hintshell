@@ -5,7 +5,7 @@
     Author            = 'HintShell'
     Description       = '🧠 HintShell - Personal Command Intelligence Engine for PowerShell'
     PowerShellVersion = '7.2'
-    FunctionsToExport = @('Start-HintShell', 'Stop-HintShell', 'Get-HintShellStatus')
+    FunctionsToExport = @('Start-HintShell', 'Stop-HintShell', 'Get-HintShellStatus', 'Invoke-HSWrapper', 'hs', 'hintshell')
     CmdletsToExport   = @()
     VariablesToExport  = @()
     AliasesToExport    = @()

@@ -192,8 +192,10 @@ function Stop-HintShell {
     if (-not (Test-Path $configRoot)) { New-Item -ItemType Directory -Path $configRoot -Force | Out-Null }
     New-Item -ItemType File -Path $disabledFile -Force | Out-Null
 
-    # Stop daemon
-    $cliPath = Join-Path $modulePath "hintshell.exe"
+    $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+    $cliPath = Join-Path $modulePath $exeName
+    if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+
     if (Test-Path $cliPath) {
         & $cliPath stop
     } else {
@@ -214,12 +216,93 @@ function Stop-HintShell {
     Set-PSReadLineKeyHandler -Key Enter -Function AcceptLine
     Set-PSReadLineKeyHandler -Key Escape -Function RevertLine
 
-    Write-Host "🛑 HintShell stopped and disabled. Start it again with 'Start-HintShell -Force'" -ForegroundColor Yellow
+    Write-Host "🛑 HintShell stopped and disabled. Start it again with 'hs start'" -ForegroundColor Yellow
 }
 
 function Get-HintShellStatus {
-    $cliPath = Join-Path $modulePath "hintshell.exe"
-    if (Test-Path $cliPath) { & $cliPath status } else { Write-Warning "hintshell.exe not found." }
+    $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+    $cliPath = Join-Path $modulePath $exeName
+    if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+    
+    if (Test-Path $disabledFile) {
+        Write-Host "⏸️  HintShell UI is currently DISABLED (Run 'hs start' to enable)" -ForegroundColor DarkYellow
+    } else {
+        Write-Host "✨ HintShell UI is ACTIVE in this session" -ForegroundColor Cyan
+    }
+
+    if (Test-Path $cliPath) { 
+        & $cliPath status 
+    } else { 
+        Write-Warning "hintshell binary not found." 
+    }
 }
 
-Export-ModuleMember -Function Start-HintShell, Stop-HintShell, Get-HintShellStatus
+function Invoke-HSWrapper {
+    param(
+        [Parameter(Position = 0)] [string]$Command,
+        [Parameter(ValueFromRemainingArguments)] [string[]]$Args
+    )
+
+    switch ($Command) {
+        'start' {
+            Start-HintShell -Force
+        }
+        'stop' {
+            Stop-HintShell
+        }
+        'status' {
+            Get-HintShellStatus
+        }
+        'update' {
+            Write-Host "🔄 Updating HintShell via npm..." -ForegroundColor Cyan
+            try {
+                npm install -g hintshell@beta
+                Write-Host "✅ Update complete. Restart terminal to apply changes." -ForegroundColor Green
+            } catch {
+                Write-Error "❌ Update failed. Do you have npm installed?"
+            }
+        }
+        '--version' {
+            $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+            $cliPath = Join-Path $modulePath $exeName
+            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+            if (Test-Path $cliPath) { & $cliPath --version } else { Write-Host "HintShell PowerShell Module Configured" }
+        }
+        '-v' {
+            $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+            $cliPath = Join-Path $modulePath $exeName
+            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+            if (Test-Path $cliPath) { & $cliPath -v } else { Write-Host "HintShell PowerShell Module Configured" }
+        }
+        default {
+            $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
+            $cliPath = Join-Path $modulePath $exeName
+            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+            
+            if (Test-Path $cliPath) {
+                if ($Command) { & $cliPath $Command $Args } else { & $cliPath }
+            } else {
+                Write-Warning "HintShell binary not found locally."
+                if ($Command) { & $exeName $Command $Args } else { & $exeName }
+            }
+        }
+    }
+}
+
+function hs {
+    param(
+        [Parameter(Position = 0)] [string]$Command,
+        [Parameter(ValueFromRemainingArguments)] [string[]]$ArgsArr
+    )
+    if ($Command) { Invoke-HSWrapper $Command @ArgsArr } else { Invoke-HSWrapper }
+}
+
+function hintshell {
+    param(
+        [Parameter(Position = 0)] [string]$Command,
+        [Parameter(ValueFromRemainingArguments)] [string[]]$ArgsArr
+    )
+    if ($Command) { Invoke-HSWrapper $Command @ArgsArr } else { Invoke-HSWrapper }
+}
+
+Export-ModuleMember -Function Start-HintShell, Stop-HintShell, Get-HintShellStatus, Invoke-HSWrapper, hs, hintshell

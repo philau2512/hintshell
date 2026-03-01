@@ -1,0 +1,50 @@
+{
+  "name": "hintshell",
+  "version": "0.1.0-beta.1",
+  "description": "AI-Powered Terminal Auto-Suggestion Engine — learns your command history and suggests commands in real-time",
+  "keywords": [
+    "terminal",
+    "autocomplete",
+    "auto-suggest",
+    "shell",
+    "command-line",
+    "powershell",
+    "bash",
+    "zsh",
+    "cli",
+    "productivity",
+    "rust"
+  ],
+  "homepage": "https://github.com/philau2512/hintshell",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/philau2512/hintshell.git"
+  },
+  "license": "MIT",
+  "author": "philau2512",
+  "bin": {
+    "hintshell": "bin/hintshell-wrapper.js",
+    "hs": "bin/hintshell-wrapper.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/npm-install.js"
+  },
+  "os": [
+    "win32",
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}
