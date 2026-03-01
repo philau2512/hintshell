@@ -64,11 +64,9 @@ function downloadFile(url, dest) {
 function extractArchive(archivePath, destDir) {
   const platform = os.platform();
   if (platform === "win32") {
-    // Use PowerShell to extract zip
-    execSync(
-      `powershell -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: "inherit" }
-    );
+    // Windows 10+ has tar (bsdtar) built-in which fully supports zip files.
+    // It avoids execution policy and auto-load module issues from PowerShell's Expand-Archive.
+    execSync(`tar -xf "${archivePath}" -C "${destDir}"`, { stdio: "inherit" });
   } else {
     execSync(`tar xzf "${archivePath}" -C "${destDir}"`, { stdio: "inherit" });
   }
