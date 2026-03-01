@@ -32,6 +32,18 @@ if (Test-Path $releaseBin) {
 $defaultsJson = ".\core\default-commands.json"
 if (Test-Path $defaultsJson) { Copy-Item $defaultsJson $moduleDir -Force }
 
+# 3.5 Sync to ~/.hintshell/ (so new terminals get latest code)
+Write-Host "Syncing to ~/.hintshell/..." -ForegroundColor Yellow
+$installModuleDir = Join-Path $env:USERPROFILE ".hintshell\module"
+if (Test-Path $installModuleDir) {
+    Copy-Item "$moduleDir\*" $installModuleDir -Recurse -Force
+}
+$installRoot = Join-Path $env:USERPROFILE ".hintshell"
+if (Test-Path $defaultsJson) { Copy-Item $defaultsJson $installRoot -Force }
+# Remove disabled flag so dev reload always starts fresh
+$disabledFile = Join-Path $installRoot ".disabled"
+if (Test-Path $disabledFile) { Remove-Item $disabledFile -Force }
+
 # 4. Import module
 Write-Host "Importing module..." -ForegroundColor Yellow
 $modulePsm = Join-Path $moduleDir "HintShellModule.psm1"
