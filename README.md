@@ -49,7 +49,7 @@ HintShell uses `fzf` to render the suggestion picker on Unix systems.
 ### 2. Install HintShell
 Install via NPM to get the latest pre-built binaries for your platform:
 ```bash
-npm install -g hintshell
+npm install -g hintshell@latest
 ```
 
 ### 3. Initialize Shell Integration
