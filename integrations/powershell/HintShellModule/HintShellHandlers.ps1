@@ -49,7 +49,7 @@ function global:Invoke-HSAutoSuggest {
             if ([Console]::KeyAvailable) {
                 # Insert the character we consumed back into PSReadLine
                 if ($k.KeyChar -ne 0) {
-                    [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($k.KeyChar, $null)
+                    [Microsoft.PowerShell.PSConsoleReadLine]::Insert([string]$k.KeyChar)
                 }
                 $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
                 Clear-HSOverlay
@@ -162,6 +162,10 @@ function global:Invoke-HSAutoSuggest {
                         Update-HSScroll
                         Draw-HSOverlay -Suggestions $newSuggs -SelectedIndex 0 -TypedSoFar $newTyped
                     } else {
+                        # Non-ASCII printable (Vietnamese IME, etc.): insert then close
+                        if ($k.KeyChar -ne [char]0 -and -not [char]::IsControl($k.KeyChar)) {
+                            [Microsoft.PowerShell.PSConsoleReadLine]::Insert([string]$k.KeyChar)
+                        }
                         Clear-HSOverlay
                         Reset-HSState
                         return
