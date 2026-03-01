@@ -43,15 +43,17 @@ function global:Invoke-HSAutoSuggest {
 
             $k = [Console]::ReadKey($true)
 
-            # If another key arrived immediately after ReadKey (burst/paste), 
-            # we likely swallowed the first char of a paste. 
-            # Clear and return.
+            # Post-read paste detection: wait briefly for more keys
+            # This catches IDE/programmatic input where chars arrive with slight delays
+            Start-Sleep -Milliseconds 30
             if ([Console]::KeyAvailable) {
-                # Attempt to insert the character we just "stole" back into PSReadLine
+                # Insert the character we consumed back into PSReadLine
                 if ($k.KeyChar -ne 0) {
                     [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($k.KeyChar, $null)
                 }
+                $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
                 Clear-HSOverlay
+                Reset-HSState
                 return
             }
 
@@ -127,9 +129,21 @@ function global:Invoke-HSAutoSuggest {
                 default {
                     # Skip non-ASCII (Vietnamese IME, etc.)
                     if ($k.KeyChar -ne [char]0 -and -not [char]::IsControl($k.KeyChar) -and [int]$k.KeyChar -lt 128) {
-                        # Insert char + re-query (STAY in loop)
+                        # Insert char
                         Clear-HSOverlay
                         [Microsoft.PowerShell.PSConsoleReadLine]::Insert($k.KeyChar)
+
+                        # Paste/programmatic input check before expensive IPC
+                        Start-Sleep -Milliseconds 30
+                        if ([Console]::KeyAvailable) {
+                            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+                            Reset-HSState
+                            return
+                        }
+                        if ([datetime]::Now -lt $script:HS.PasteUntil) {
+                            Reset-HSState
+                            return
+                        }
 
                         $bufRef2 = $null; $curRef2 = $null
                         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef2, [ref]$curRef2)
