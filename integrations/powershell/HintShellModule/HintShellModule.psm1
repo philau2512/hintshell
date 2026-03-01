@@ -1,5 +1,5 @@
 # HintShell PowerShell Module
-# Real-time auto-suggest with Claude-style minimal overlay
+# Event-driven auto-suggest with overlay navigation via PSReadLine key bindings
 
 $ErrorActionPreference = 'SilentlyContinue'
 $modulePath = $PSScriptRoot
@@ -14,7 +14,6 @@ function Start-HintShell {
     . (Join-Path $modulePath "HintShellDaemon.ps1")
     . (Join-Path $modulePath "HintShellOverlay.ps1")
     . (Join-Path $modulePath "HintShellHandlers.ps1")
-    # Write-Host "🧠 HintShell overlay loaded!" -ForegroundColor Green
 
     # 2. Start daemon if not running
     $pipeExists = Test-Path "\\.\pipe\hintshell"
@@ -34,13 +33,20 @@ function Start-HintShell {
     Set-PSReadLineOption -PredictionSource None
 
     # ========================================
-    # 4. KEY BINDINGS - Real-time auto-suggest
+    # 4. KEY BINDINGS - Event-driven
     # ========================================
 
     # --- Printable characters: insert + trigger overlay ---
     $hsCharHandler = {
         param($key, $arg)
-        # Paste detection: if many keys are buffered, set cooldown and bail
+
+        # Close overlay if visible (new char typed = start fresh)
+        if ($script:HS.IsVisible) {
+            Clear-HSOverlay
+            Reset-HSState
+        }
+
+        # Paste detection: if many keys are buffered, just insert and bail
         if ([Console]::KeyAvailable) {
             [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
@@ -49,8 +55,8 @@ function Start-HintShell {
 
         [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
 
-        # Brief wait then recheck for delayed paste burst
-        Start-Sleep -Milliseconds 30
+        # Wait for IME completion + paste burst detection
+        Start-Sleep -Milliseconds 50
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
@@ -58,6 +64,11 @@ function Start-HintShell {
 
         # Skip if within paste cooldown
         if ([datetime]::Now -lt $script:HS.PasteUntil) { return }
+
+        # Check if IME modified the buffer (non-ASCII = Vietnamese/CJK input active)
+        $bufRef = $null; $curRef = $null
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
+        if ("$bufRef" -match '[^\x00-\x7F]') { return }
 
         Invoke-HSAutoSuggest
     }
@@ -81,6 +92,10 @@ function Start-HintShell {
 
     # --- Spacebar: insert space + trigger overlay ---
     Set-PSReadLineKeyHandler -Key Spacebar -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            Clear-HSOverlay
+            Reset-HSState
+        }
         [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
@@ -97,6 +112,10 @@ function Start-HintShell {
 
     # --- Backspace: delete char + trigger overlay ---
     Set-PSReadLineKeyHandler -Key Backspace -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            Clear-HSOverlay
+            Reset-HSState
+        }
         [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
@@ -111,12 +130,45 @@ function Start-HintShell {
         Invoke-HSAutoSuggest
     }
 
-    # --- Tab: accept ghost text / suggestion OR trigger overlay ---
-    Set-PSReadLineKeyHandler -Key Tab -ScriptBlock {
-        if ($script:HS.IsVisible -and $script:HS.OverlayLines -eq -1) {
-            # Ghost text mode: accept top suggestion
+    # --- UpArrow: navigate overlay or default history ---
+    Set-PSReadLineKeyHandler -Key UpArrow -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            $script:HS.SelectedIndex--
+            Update-HSScroll
             Clear-HSOverlay
-            $sel = $script:HS.Suggestions[0].command
+            Draw-HSOverlay -Suggestions $script:HS.Suggestions -SelectedIndex $script:HS.SelectedIndex -TypedSoFar $script:HS.CurrentInput
+        } else {
+            [Microsoft.PowerShell.PSConsoleReadLine]::PreviousHistory()
+        }
+    }
+
+    # --- DownArrow: navigate overlay or default history ---
+    Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            $script:HS.SelectedIndex++
+            Update-HSScroll
+            Clear-HSOverlay
+            Draw-HSOverlay -Suggestions $script:HS.Suggestions -SelectedIndex $script:HS.SelectedIndex -TypedSoFar $script:HS.CurrentInput
+        } else {
+            [Microsoft.PowerShell.PSConsoleReadLine]::NextHistory()
+        }
+    }
+
+    # --- Escape: close overlay or default revert ---
+    Set-PSReadLineKeyHandler -Key Escape -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            Clear-HSOverlay
+            Reset-HSState
+        } else {
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+        }
+    }
+
+    # --- Tab: accept suggestion OR trigger overlay ---
+    Set-PSReadLineKeyHandler -Key Tab -ScriptBlock {
+        if ($script:HS.IsVisible) {
+            Clear-HSOverlay
+            $sel = $script:HS.Suggestions[$script:HS.SelectedIndex].command
             Reset-HSState
             [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
             [Microsoft.PowerShell.PSConsoleReadLine]::Insert($sel)
@@ -128,11 +180,13 @@ function Start-HintShell {
     # --- Ctrl+Space: manual trigger ---
     Set-PSReadLineKeyHandler -Key Ctrl+Spacebar -ScriptBlock { Invoke-HSAutoSuggest }
 
-    # --- Enter: reset state + execute (don't clear overlay to avoid prompt corruption) ---
+    # --- Enter: execute command ---
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-        # Reset overlay state silently (output will overwrite it)
-        $script:HS.OverlayLines = 0
-        $script:HS.IsVisible = $false
+        # Clear overlay state
+        if ($script:HS.IsVisible) {
+            $script:HS.OverlayLines = 0
+            $script:HS.IsVisible = $false
+        }
         Reset-HSState
 
         # Get command before accepting
