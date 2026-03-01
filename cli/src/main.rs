@@ -336,10 +336,8 @@ fn check_npm_update(local_version: &str) {
     if let Ok(resp) = resp {
         if let Ok(body) = resp.into_string() {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                // Try beta tag first, then latest
-                let latest = json["dist-tags"]["beta"]
-                    .as_str()
-                    .or_else(|| json["dist-tags"]["latest"].as_str());
+                // Check latest tag (stable) from npm
+                let latest = json["dist-tags"]["latest"].as_str();
 
                 if let Some(latest_ver) = latest {
                     if is_newer(latest_ver, local_version) {
@@ -357,32 +355,33 @@ fn check_npm_update(local_version: &str) {
 }
 
 fn is_newer(latest: &str, local: &str) -> bool {
-    // Simple semver-ish comparison for beta versions
-    // Example: 0.1.0-beta.6 vs 0.1.0-beta.5
-    
     if latest == local { return false; }
     
-    let latest_parts: Vec<&str> = latest.split('.').collect();
-    let local_parts: Vec<&str> = local.split('.').collect();
-    
-    // Compare major.minor.patch
-    for i in 0..3 {
-        let v1 = latest_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        let v2 = local_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        if v1 > v2 { return true; }
-        if v1 < v2 { return false; }
-    }
-    
-    // If major.minor.patch are same, check beta part
-    // e.g. "beta" or "beta-6"
-    let latest_beta = latest.split('-').last().unwrap_or("");
-    let local_beta = local.split('-').last().unwrap_or("");
-    
-    if latest_beta.starts_with("beta") && local_beta.starts_with("beta") {
-        let v1 = latest_beta.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        let v2 = local_beta.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        return v1 > v2;
-    }
-    
-    latest > local
+    let parse_ver = |v: &str| {
+        let base = v.split('-').next().unwrap_or(v);
+        let parts: Vec<u32> = base.split('.')
+            .map(|s| s.parse::<u32>().unwrap_or(0))
+            .collect();
+        
+        let score = parts.get(0).copied().unwrap_or(0) * 1000000 
+                      + parts.get(1).copied().unwrap_or(0) * 1000 
+                      + parts.get(2).copied().unwrap_or(0);
+        
+        // Beta versions have lower priority than non-beta of same version
+        let is_beta = v.contains("-beta");
+        let beta_num = if is_beta {
+            v.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
+        } else {
+            999 // Non-beta is always higher than beta
+        };
+        
+        (score, beta_num)
+    };
+
+    let (lat_s, lat_b) = parse_ver(latest);
+    let (loc_s, loc_b) = parse_ver(local);
+
+    if lat_s > loc_s { return true; }
+    if lat_s < loc_s { return false; }
+    lat_b > loc_b
 }

@@ -232,39 +232,7 @@ function Get-HintShellStatus {
 
     if (Test-Path $cliPath) { 
         # Get status from daemon
-        $statusOutput = & $cliPath status
-        $statusOutput | Write-Host
-        
-        # Extract version from output (e.g. "🧠 HintShell Daemon v0.1.0-beta.4")
-        $localVersion = $null
-        foreach ($line in $statusOutput) {
-            if ($line -match "v([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9\.]+)?)$") {
-                $localVersion = $matches[1]
-                break
-            }
-        }
-
-        # Check npm for latest beta version
-        if ($localVersion) {
-            try {
-                # Setup silent web request to check latest beta tag
-                $npmInfo = Invoke-RestMethod -Uri "https://registry.npmjs.org/hintshell" -UseBasicParsing -ErrorAction Ignore
-                $latestVersion = $npmInfo.'dist-tags'.beta
-                
-                if ($latestVersion) {
-                    if ($localVersion -ne $latestVersion) {
-                        Write-Host ""
-                        Write-Host "🆙 Update Available: $latestVersion (You have $localVersion)" -ForegroundColor Yellow
-                        Write-Host "   Run 'hs update' to upgrade." -ForegroundColor Gray
-                    } else {
-                        Write-Host ""
-                        Write-Host "✅ You are using the latest version." -ForegroundColor Green
-                    }
-                }
-            } catch {
-                # Silently ignore network errors during version check
-            }
-        }
+        & $cliPath status
 
     } else { 
         Write-Warning "hintshell binary not found." 
