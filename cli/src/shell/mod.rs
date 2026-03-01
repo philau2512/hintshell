@@ -107,6 +107,60 @@ impl Shell {
             Err("Already installed".to_string())
         }
     }
+
+    /// Uninstall hook line from shell config file
+    pub fn uninstall(&self) -> Result<(), String> {
+        let config = self.config_path().ok_or("Could not find config path")?;
+        if !config.exists() {
+            return Ok(());
+        }
+
+        let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
+        
+        // Use the marker to find the block
+        let marker = "# HintShell Initialization";
+        if let Some(start_idx) = content.find(marker) {
+            // Usually the marker is on a line by itself, we want to find the start of that line
+            let mut start_of_block = start_idx;
+            while start_of_block > 0 && content.as_bytes()[start_of_block-1] != b'\n' {
+                start_of_block -= 1;
+            }
+
+            // Find the end of the block (usually 2-4 lines after)
+            // For now, let's look for the next blank line or next significant newline sequence
+            let mut end_of_block = start_idx;
+            let mut lines_count = 0;
+            while end_of_block < content.len() && lines_count < 4 {
+                if content.as_bytes()[end_of_block] == b'\n' {
+                    lines_count += 1;
+                }
+                end_of_block += 1;
+            }
+
+            let mut new_content = content;
+            new_content.replace_range(start_of_block..end_of_block, "");
+            fs::write(&config, new_content).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Ok(()) // Already uninstalled or not found
+        }
+    }
+}
+
+/// Remove binaries and modules from ~/.hintshell/
+pub fn uninstall_assets() -> Result<(), String> {
+    let home = hintshell_home();
+    let bin_dir = home.join("bin");
+    let module_dir = home.join("module");
+
+    if bin_dir.exists() {
+        fs::remove_dir_all(&bin_dir).map_err(|e| e.to_string())?;
+    }
+    if module_dir.exists() {
+        fs::remove_dir_all(&module_dir).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 /// Copy binaries and modules into ~/.hintshell/

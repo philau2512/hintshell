@@ -79,6 +79,12 @@ enum Commands {
         /// Shell type (bash, zsh, fish, powershell)
         shell: String,
     },
+
+    /// Uninstall HintShell from the system
+    Uninstall,
+
+    /// Update HintShell to the latest version
+    Update,
 }
 
 #[tokio::main]
@@ -212,12 +218,37 @@ async fn main() {
             println!("Done! Please restart your shell to activate hooks.");
         }
         Commands::Hook { shell } => {
-            if let Some(s) = shell::Shell::from_str(&shell) {
-                print!("{}", s.get_hook());
-            } else {
-                eprintln!("❌ Unsupported shell: {}", shell);
-                std::process::exit(1);
+            let s = shell::Shell::from_str(&shell).expect("Unsupported shell");
+            print!("{}", s.get_hook());
+        }
+        Commands::Uninstall => {
+            println!("🗑 Uninstalling HintShell...");
+            
+            // 1. Stop daemon
+            let request = HintShellRequest::Shutdown;
+            let _ = send_request(&request).await;
+            println!("✅ Daemon stopped.");
+
+            // 2. Remove hooks from all shells
+            let shells = shell::detect_shells();
+            for s in shells {
+                match s.uninstall() {
+                    Ok(_) => println!("✅ Cleared {} config.", s.name()),
+                    Err(e) => println!("⚠️ Failed to clear {} config: {}", s.name(), e),
+                }
             }
+
+            // 3. Remove assets
+            match shell::uninstall_assets() {
+                Ok(_) => println!("✅ Binaries removed."),
+                Err(e) => println!("⚠️ Failed to remove binaries: {}", e),
+            }
+
+            println!("\n✨ HintShell uninstalled successfully.");
+            println!("👉 Please restart your terminal or source your shell config to complete the process.");
+        }
+        Commands::Update => {
+            check_npm_update(env!("CARGO_PKG_VERSION"));
         }
     }
 }
