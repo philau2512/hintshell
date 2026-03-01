@@ -122,9 +122,20 @@ async fn main() {
                 Ok(resp) => {
                     if let Some(suggestions) = resp.suggestions {
                         if format == "plain" {
-                            // Plain: one command per line (for fzf/scripts)
+                            // Plain: one command per line (for scripts)
                             for s in &suggestions {
                                 println!("{}", s.command);
+                            }
+                        } else if format == "fzf" {
+                            // FZF: command + frequency, padded for alignment
+                            for s in &suggestions {
+                                let cmd = &s.command;
+                                let display = if cmd.len() > 60 {
+                                    format!("{}…", &cmd[..59])
+                                } else {
+                                    cmd.clone()
+                                };
+                                println!("{:<62}\t({}x)", display, s.frequency);
                             }
                         } else {
                             // Human readable
