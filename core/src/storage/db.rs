@@ -9,10 +9,17 @@ use std::sync::Mutex;
 pub struct CommandEntry {
     pub id: Option<i64>,
     pub command: String,
+    pub description: Option<String>,
     pub frequency: i64,
     pub last_used: DateTime<Utc>,
     pub directory: Option<String>,
     pub shell: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DefaultCmd {
+    pub command: String,
+    pub description: Option<String>,
 }
 
 pub struct HistoryStore {
@@ -40,6 +47,7 @@ impl HistoryStore {
             "CREATE TABLE IF NOT EXISTS history (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 command     TEXT NOT NULL,
+                description TEXT,
                 frequency   INTEGER NOT NULL DEFAULT 1,
                 last_used   TEXT NOT NULL,
                 directory   TEXT,
@@ -51,6 +59,21 @@ impl HistoryStore {
             CREATE INDEX IF NOT EXISTS idx_last_used ON history(last_used DESC);
             ",
         )?;
+
+        // Migration: Add description column if missing
+        let has_description: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('history') WHERE name='description'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_description {
+            conn.execute("ALTER TABLE history ADD COLUMN description TEXT", [])?;
+        }
+
         Ok(())
     }
 
@@ -89,7 +112,7 @@ impl HistoryStore {
         let pattern = format!("{}%", prefix);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, command, frequency, last_used, directory, shell
+            "SELECT id, command, frequency, last_used, directory, shell, description
              FROM history
              WHERE command LIKE ?1
              ORDER BY frequency DESC, last_used DESC
@@ -107,6 +130,7 @@ impl HistoryStore {
                         .unwrap_or_else(|_| Utc::now()),
                     directory: row.get(4)?,
                     shell: row.get(5)?,
+                    description: row.get(6).unwrap_or(None),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -118,7 +142,7 @@ impl HistoryStore {
     pub fn get_all_commands(&self) -> SqlResult<Vec<CommandEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, command, frequency, last_used, directory, shell FROM history ORDER BY frequency DESC",
+            "SELECT id, command, frequency, last_used, directory, shell, description FROM history ORDER BY frequency DESC",
         )?;
 
         let entries = stmt
@@ -132,6 +156,7 @@ impl HistoryStore {
                         .unwrap_or_else(|_| Utc::now()),
                     directory: row.get(4)?,
                     shell: row.get(5)?,
+                    description: row.get(6).unwrap_or(None),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -147,7 +172,7 @@ impl HistoryStore {
     /// Seed the database with default commands from JSON content.
     /// Only inserts commands that don't already exist (idempotent).
     pub fn seed_defaults(&self, json_content: &str) -> Result<usize, String> {
-        let categories: HashMap<String, Vec<String>> = serde_json::from_str(json_content)
+        let categories: HashMap<String, Vec<DefaultCmd>> = serde_json::from_str(json_content)
             .map_err(|e| format!("Failed to parse defaults JSON: {}", e))?;
 
         let now = Utc::now().to_rfc3339();
@@ -158,8 +183,9 @@ impl HistoryStore {
 
         let mut count = 0;
         for (_category, commands) in &categories {
-            for cmd in commands {
-                let trimmed = cmd.trim();
+            for cmd_obj in commands {
+                let trimmed = cmd_obj.command.trim();
+                let desc = cmd_obj.description.clone();
                 if trimmed.is_empty() {
                     continue;
                 }
@@ -174,10 +200,16 @@ impl HistoryStore {
 
                 if !exists {
                     conn.execute(
-                        "INSERT INTO history (command, frequency, last_used, directory, shell) VALUES (?1, 1, ?2, NULL, NULL)",
-                        params![trimmed, now],
+                        "INSERT INTO history (command, frequency, last_used, directory, shell, description) VALUES (?1, 1, ?2, NULL, NULL, ?3)",
+                        params![trimmed, now, desc],
                     ).map_err(|e| e.to_string())?;
                     count += 1;
+                } else {
+                    // Update descriptions for existing records that don't have one or have a different one
+                    conn.execute(
+                        "UPDATE history SET description = ?1 WHERE command = ?2 AND (description IS NULL OR description != ?1)",
+                        params![desc, trimmed],
+                    ).map_err(|e| e.to_string())?;
                 }
             }
         }

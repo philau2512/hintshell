@@ -48,6 +48,8 @@ pub struct HintShellResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuggestionItem {
     pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub score: f64,
     pub frequency: i64,
 }
@@ -130,6 +132,7 @@ mod tests {
         let resp = HintShellResponse::ok_suggestions(vec![
             SuggestionItem {
                 command: "git commit".to_string(),
+                description: None,
                 score: 95.0,
                 frequency: 10,
             },

@@ -46,7 +46,7 @@ function script:Get-HSSuggestions {
         if ($seen.ContainsKey($cleanCmd)) {
             $seen[$cleanCmd].frequency += [int]$s.frequency
         } else {
-            $newObj = [PSCustomObject]@{ command = $cleanCmd; frequency = [int]$s.frequency }
+            $newObj = [PSCustomObject]@{ command = $cleanCmd; description = $s.description; frequency = [int]$s.frequency }
             $processed += $newObj
             $seen[$cleanCmd] = $newObj
         }
@@ -204,9 +204,16 @@ function script:Draw-HSOverlay {
         $lines++
     }
 
-    # Footer
-    $hintText = " Tab:Accept  Enter:Run  $([char]0x2191)$([char]0x2193):Navigate  Esc:Close"
-    $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;238m$hintText$e[0m")
+    # Footer (Command Description)
+    $selCmdObj = $Suggestions[$SelectedIndex]
+    $descText = if (-not [string]::IsNullOrWhiteSpace($selCmdObj.description)) { $selCmdObj.description } else { "No description available" }
+    
+    # Truncate description safely to avoid word wrapping
+    $maxDescLen = [Math]::Max(10, $W - 6)
+    if ($descText.Length -gt $maxDescLen) { $descText = $descText.Substring(0, $maxDescLen - 1) + [char]0x2026 }
+    
+    $hintText = " 💡 $descText"
+    $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;243m$hintText$e[0m")
     $lines++
 
     [Console]::Write($buf.ToString())

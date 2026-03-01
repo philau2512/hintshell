@@ -193,6 +193,7 @@ fn process_request(
                 .into_iter()
                 .map(|s| SuggestionItem {
                     command: s.command,
+                    description: s.description,
                     score: s.score,
                     frequency: s.frequency,
                 })

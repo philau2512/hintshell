@@ -8,6 +8,7 @@ use crate::storage::db::{CommandEntry, HistoryStore};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suggestion {
     pub command: String,
+    pub description: Option<String>,
     pub score: f64,
     pub frequency: i64,
 }
@@ -85,6 +86,7 @@ impl SuggestionEngine {
 
                 Suggestion {
                     command: entry.command,
+                    description: entry.description,
                     score: total_score,
                     frequency: entry.frequency,
                 }
