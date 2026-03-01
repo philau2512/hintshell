@@ -127,7 +127,7 @@ async fn main() {
                                 println!("{}", s.command);
                             }
                         } else if format == "fzf" {
-                            // FZF: command + frequency, padded for alignment
+                            // FZF: command + frequency, tab-separated
                             for s in &suggestions {
                                 let cmd = &s.command;
                                 let display = if cmd.len() > 60 {
@@ -135,7 +135,7 @@ async fn main() {
                                 } else {
                                     cmd.clone()
                                 };
-                                println!("{:<62}\t({}x)", display, s.frequency);
+                                println!("{:<60}\t({}x)", display, s.frequency);
                             }
                         } else {
                             // Human readable
