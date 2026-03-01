@@ -1,5 +1,6 @@
 # 🧠 HintShell — AI-Powered Terminal Auto-Suggestion Engine (Rust CLI)
 
+[![NPM Version](https://img.shields.io/npm/v/hintshell?color=red&label=npm%20beta)](https://www.npmjs.com/package/hintshell)
 [![Rust CLI](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Cross Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)]()
 [![Shells](https://img.shields.io/badge/Shell-PowerShell%20%7C%20Bash%20%7C%20Zsh-4D4D4D.svg)]()
@@ -7,7 +8,7 @@
 
 **HintShell** is a cross-platform, fuzzy-matching command intelligence engine built in Rust. It learns your terminal habits to provide real-time auto-suggestions and boosts your command-line productivity.
 
-*(Gợi ý lệnh terminal thông minh dựa trên lịch sử sử dụng của bạn. HintShell học từ mỗi lệnh bạn gõ, kết hợp fuzzy matching + frequency scoring để gợi ý chính xác nhất.)*
+*(Gợi ý lệnh terminal thông minh dựa trên lịch sử sử dụng của bạn. HintShell học từ mỗi lệnh bạn gõ, kết hợp fuzzy matching + frequency scoring để gợi ý chính xác nhất. Hỗ trợ đầy đủ tiếng Việt IME và các lệnh hệ thống nâng cao.)*
 
 ---
 
@@ -44,57 +45,56 @@
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Recommended)
 
-### Prerequisites
-
-| Platform | Requirements |
-|----------|-------------|
-| **Windows** | Rust toolchain, PowerShell 7+ |
-| **Linux/macOS** | Rust toolchain, `build-essential`, `fzf` |
-
-### 1. Build
+Cài đặt cực kỳ đơn giản qua **NPM** (hỗ trợ Windows, Linux, macOS):
 
 ```bash
-git clone https://github.com/your-username/ShellMind.git
-cd ShellMind
-cargo build --release
+# 1. Cài đặt global
+npm install -g hintshell
+
+# 2. Khởi tạo (tự động cấu hình shell)
+hintshell init
+
+# 3. Khởi động lại terminal hoặc reload config
+# PowerShell: . $PROFILE
+# Bash/Zsh: source ~/.bashrc (hoặc ~/.zshrc)
 ```
 
-Output: `target/release/hintshell` + `target/release/hintshell-core`
+### Build from Source
 
-### 2. Install
+Nếu bạn muốn tự build từ mã nguồn:
 
 ```bash
+git clone https://github.com/conruabien/ShellMind.git
+cd ShellMind
+cargo build --release
 ./target/release/hintshell init
 ```
 
-Lệnh `init` sẽ tự động:
-- Copy binary vào `~/.hintshell/bin/`
-- Copy PowerShell module vào `~/.hintshell/module/`
-- Thêm hook vào shell config (`.bashrc`, `.zshrc`, hoặc PowerShell profile)
+---
 
-### 3. Restart shell
-
-```bash
-# Bash/Zsh
-source ~/.bashrc   # hoặc source ~/.zshrc
-
-# PowerShell
-. $PROFILE
-```
-
-### 4. Verify
-
-```bash
-hintshell status
-```
+## 🏗️ Architecture
 
 ```
-🧠 HintShell Daemon v0.1.0
-   Commands in history: 42
-   Uptime: 120s
+┌─────────────┐     IPC      ┌──────────────────┐
+│  hintshell   │◄────────────►│  hintshell-core   │
+│  (CLI)       │  Named Pipe  │  (Daemon)         │
+│              │  or UDS      │  SQLite + Fuzzy   │
+└─────────────┘              └──────────────────┘
+       ▲
+       │ eval "$(hintshell hook bash)"
+       │ Import-Module HintShellModule
+       ▼
+┌─────────────────────────┐
+│  Shell Integration       │
+│  PowerShell / Bash / Zsh │
+└─────────────────────────┘
 ```
+
+- **hintshell** — CLI client, gửi request qua IPC
+- **hintshell-core** — Daemon chạy nền, quản lý SQLite + suggestion engine
+- **IPC** — Named Pipe (Windows) / Unix Domain Socket (Linux/macOS)
 
 ---
 
@@ -106,13 +106,14 @@ Gõ lệnh bình thường → gợi ý tự động hiện dưới dạng overl
 
 ```
 PS> git ch
-  → git checkout main (12x)
-    git cherry-pick (3x)
+  → git checkout main (12x)  [1/30]
+    git cherry-pick (3x)     [2/30]
 ```
 
 - **↑/↓** — chọn gợi ý
 - **Tab** — chấp nhận
 - **Esc** — đóng
+- **Enter** — thực thi lệnh hiện tại
 
 ### Bash / Zsh (Tab → fzf)
 
@@ -132,13 +133,10 @@ $ docker  # nhấn Tab
 ### CLI Commands
 
 ```bash
-hintshell start           # Khởi động daemon
+hintshell status          # Xem trạng thái daemon
 hintshell stop            # Dừng daemon
-hintshell status          # Xem trạng thái
-hintshell suggest "git"   # Gợi ý thủ công
-hintshell add -c "cmd"    # Thêm lệnh thủ công
-hintshell hook bash       # In hook script (cho eval)
-hintshell init            # Cài đặt tự động
+hintshell start           # Khởi động lại daemon
+hintshell init            # Chạy lại bộ cài đặt
 ```
 
 ---
