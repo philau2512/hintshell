@@ -8,6 +8,10 @@ description = "HintShell CLI - Control your Personal Command Intelligence Engine
 name = "hintshell"
 path = "src/main.rs"
 
+[[bin]]
+name = "hs"
+path = "src/main.rs"
+
 [dependencies]
 hintshell-core = { path = "../core", package = "hintshell-core" }
 serde = { version = "1", features = ["derive"] }

@@ -8,7 +8,7 @@
 
 **HintShell** is a cross-platform, fuzzy-matching command intelligence engine built in Rust. It learns your terminal habits to provide real-time auto-suggestions and boosts your command-line productivity.
 
-*(Gợi ý lệnh terminal thông minh dựa trên lịch sử sử dụng của bạn. HintShell học từ mỗi lệnh bạn gõ, kết hợp fuzzy matching + frequency scoring để gợi ý chính xác nhất. Hỗ trợ đầy đủ tiếng Việt IME và các lệnh hệ thống nâng cao.)*
+*(Gợi ý lệnh terminal thông minh dựa trên lịch sử sử dụng của bạn. HintShell học từ mỗi lệnh bạn gõ, kết hợp fuzzy matching + frequency scoring để gợi ý chính xác nhất.)*
 
 ---
 

@@ -225,6 +225,16 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     fs::copy(bin_path, bin_dir.join(hs_name))
         .map_err(|e| format!("Copy hintshell failed: {}", e))?;
 
+    // 1b. Copy hs shorthand alias
+    let hs_short = if cfg!(windows) { "hs.exe" } else { "hs" };
+    if let Some(parent) = bin_path.parent() {
+        let hs_src = parent.join(hs_short);
+        if hs_src.exists() {
+            fs::copy(&hs_src, bin_dir.join(hs_short))
+                .map_err(|e| format!("Copy hs failed: {}", e))?;
+        }
+    }
+
     // 2. Copy hintshell-core daemon (sibling of hintshell binary)
     let core_name = if cfg!(windows) { "hintshell-core.exe" } else { "hintshell-core" };
     if let Some(parent) = bin_path.parent() {
