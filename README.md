@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">HintShell</h1>
-<p align="center"><strong>Real-time Command Auto-Suggestion Engine for Your Terminal</strong></p>
+<p align="center"><strong>Next-Gen AI-Ready Real-time Command Suggestions for Your Terminal</strong></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/hintshell"><img src="https://img.shields.io/npm/v/hintshell?color=CB3837&label=npm" alt="NPM Version" /></a>
@@ -14,14 +14,14 @@
 </p>
 
 <p align="center">
-  HintShell is <strong>not</strong> a terminal emulator. It's a lightweight engine that <strong>embeds into your existing shell</strong> — PowerShell, Bash, or Zsh — and provides real-time command suggestions as you type.
+  HintShell is an <strong>AI-ready productivity engine</strong> that <strong>embeds into your existing shell</strong> (PowerShell, Bash, or Zsh). It provides <strong>context-aware command suggestions</strong> in real-time, drastically reducing context-switching and boosting developer workflow efficiency. Built with <strong>Rust</strong> for maximum performance and minimum footprint.
 </p>
 
 ---
 
 ## ⚡ Why HintShell?
 
-Most shells offer basic, single-line autocomplete. HintShell replaces that with a **rich, interactive suggestion panel** — right inside your terminal.
+Most shells offer basic, single-line autocomplete. HintShell replaces that with a <strong>smart, interactive suggestion panel</strong> — a context-aware UI/UX upgrade right inside your terminal. It's the <strong>modern alternative to PSReadLine and zsh-autosuggestions</strong>.
 
 | Feature | HintShell | PowerShell <br>(PSReadLine) | Zsh <br>(zsh-autosuggestions) | Bash | Git Bash | Fish |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|

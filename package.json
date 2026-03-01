@@ -1,8 +1,13 @@
 {
   "name": "hintshell",
   "version": "0.1.1",
-  "description": "AI-Powered Terminal Auto-Suggestion Engine — learns your command history and suggests commands in real-time",
+  "description": "Next-gen AI-ready real-time command suggestions for your terminal. Smart, context-aware autocomplete for PowerShell, Bash, and Zsh.",
   "keywords": [
+    "ai-shell",
+    "shell-assistant",
+    "terminal-autocomplete",
+    "cli-productivity",
+    "rust-cli",
     "terminal",
     "autocomplete",
     "auto-suggest",
@@ -12,6 +17,9 @@
     "bash",
     "zsh",
     "cli",
+    "fzf",
+    "dx",
+    "developer-experience",
     "productivity",
     "rust"
   ],
