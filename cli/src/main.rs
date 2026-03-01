@@ -300,11 +300,11 @@ fn check_npm_update(local_version: &str) {
                     .or_else(|| json["dist-tags"]["latest"].as_str());
 
                 if let Some(latest_ver) = latest {
-                    if latest_ver != local_version {
+                    if is_newer(latest_ver, local_version) {
                         println!();
                         println!("\x1b[33m🆙 Update available: {} → {}\x1b[0m", local_version, latest_ver);
                         println!("   Run \x1b[36mhs update\x1b[0m to upgrade.");
-                    } else {
+                    } else if latest_ver == local_version {
                         println!();
                         println!("\x1b[32m✅ You are using the latest version.\x1b[0m");
                     }
@@ -312,5 +312,35 @@ fn check_npm_update(local_version: &str) {
             }
         }
     }
-    // Silently ignore network errors
+}
+
+fn is_newer(latest: &str, local: &str) -> bool {
+    // Simple semver-ish comparison for beta versions
+    // Example: 0.1.0-beta.6 vs 0.1.0-beta.5
+    
+    if latest == local { return false; }
+    
+    let latest_parts: Vec<&str> = latest.split('.').collect();
+    let local_parts: Vec<&str> = local.split('.').collect();
+    
+    // Compare major.minor.patch
+    for i in 0..3 {
+        let v1 = latest_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let v2 = local_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        if v1 > v2 { return true; }
+        if v1 < v2 { return false; }
+    }
+    
+    // If major.minor.patch are same, check beta part
+    // e.g. "beta" or "beta-6"
+    let latest_beta = latest.split('-').last().unwrap_or("");
+    let local_beta = local.split('-').last().unwrap_or("");
+    
+    if latest_beta.starts_with("beta") && local_beta.starts_with("beta") {
+        let v1 = latest_beta.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let v2 = local_beta.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        return v1 > v2;
+    }
+    
+    latest > local
 }
