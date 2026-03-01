@@ -30,9 +30,9 @@ impl HintShellServer {
         let store = HistoryStore::new(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
         let engine = Arc::new(SuggestionEngine::new(store));
 
-        // Seed default commands (embedded at compile time)
-        const DEFAULT_COMMANDS: &str = include_str!("../../default-commands.json");
-        match engine.seed_defaults(DEFAULT_COMMANDS) {
+        // Seed default commands (runtime file > embedded fallback)
+        let defaults_json = Self::load_defaults_json(db_path);
+        match engine.seed_defaults(&defaults_json) {
             Ok(0) => { /* All commands already exist */ }
             Ok(n) => info!("Seeded {} default commands into database", n),
             Err(e) => error!("Failed to seed defaults: {}", e),
@@ -43,6 +43,42 @@ impl HintShellServer {
             start_time: Instant::now(),
             shutdown: Arc::new(Notify::new()),
         })
+    }
+
+    /// Load default-commands.json at runtime.
+    /// Search order: next to DB file, next to binary, embedded fallback.
+    fn load_defaults_json(db_path: &PathBuf) -> String {
+        // Embedded fallback (always available)
+        const EMBEDDED: &str = include_str!("../../default-commands.json");
+        let filename = "default-commands.json";
+
+        // 1. Next to DB file (~/.hintshell/default-commands.json)
+        if let Some(db_dir) = db_path.parent() {
+            let candidate = db_dir.join(filename);
+            if candidate.exists() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    info!("Loaded defaults from: {}", candidate.display());
+                    return content;
+                }
+            }
+        }
+
+        // 2. Next to the running binary
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let candidate = exe_dir.join(filename);
+                if candidate.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&candidate) {
+                        info!("Loaded defaults from: {}", candidate.display());
+                        return content;
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback to embedded
+        info!("Using embedded default commands");
+        EMBEDDED.to_string()
     }
 
     #[cfg(windows)]

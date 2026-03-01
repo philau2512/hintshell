@@ -253,6 +253,13 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
                         .map_err(|e| format!("Copy core to module failed: {}", e))?;
                 }
             }
+
+            // Also copy default-commands.json into ~/.hintshell/ for runtime loading
+            let defaults_src = src.join("default-commands.json");
+            if defaults_src.exists() {
+                fs::copy(&defaults_src, home.join("default-commands.json"))
+                    .map_err(|e| format!("Copy default-commands.json failed: {}", e))?;
+            }
         }
         None => {
             return Err(

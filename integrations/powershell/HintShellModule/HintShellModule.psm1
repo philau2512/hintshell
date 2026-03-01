@@ -40,13 +40,21 @@ function Start-HintShell {
     $hsCharHandler = {
         param($key, $arg)
 
-        # Close overlay if visible (new char typed = start fresh)
-        if ($script:HS.IsVisible) {
-            Clear-HSOverlay
-            Reset-HSState
+        # FAST PATH: if in cooldown (paste/IDE detected), skip ALL checks
+        if ([datetime]::Now -lt $script:HS.PasteUntil) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
+            # Extend cooldown if more keys coming
+            if ([Console]::KeyAvailable) {
+                $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+            }
+            return
         }
 
-        # Paste detection: if many keys are buffered, just insert and bail
+        # Close overlay if visible
+        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+
+        # Instant paste detection
         if ([Console]::KeyAvailable) {
             [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
@@ -55,17 +63,14 @@ function Start-HintShell {
 
         [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
 
-        # Wait for IME completion + paste burst detection
-        Start-Sleep -Milliseconds 50
+        # Debounce: wait then check for more input (IDE/paste/IME)
+        Start-Sleep -Milliseconds 100
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
         }
 
-        # Skip if within paste cooldown
-        if ([datetime]::Now -lt $script:HS.PasteUntil) { return }
-
-        # Check if IME modified the buffer (non-ASCII = Vietnamese/CJK input active)
+        # Check if IME modified the buffer
         $bufRef = $null; $curRef = $null
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
         if ("$bufRef" -match '[^\x00-\x7F]') { return }
@@ -90,43 +95,48 @@ function Start-HintShell {
         Set-PSReadLineKeyHandler -Key $c -ScriptBlock $hsCharHandler
     }
 
-    # --- Spacebar: insert space + trigger overlay ---
+    # --- Spacebar ---
     Set-PSReadLineKeyHandler -Key Spacebar -ScriptBlock {
-        if ($script:HS.IsVisible) {
-            Clear-HSOverlay
-            Reset-HSState
+        if ([datetime]::Now -lt $script:HS.PasteUntil) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
+            if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
+            return
+        }
+        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+        if ([Console]::KeyAvailable) {
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
+            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+            return
         }
         [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
+        Start-Sleep -Milliseconds 100
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
         }
-        Start-Sleep -Milliseconds 30
-        if ([Console]::KeyAvailable) {
-            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
-            return
-        }
-        if ([datetime]::Now -lt $script:HS.PasteUntil) { return }
         Invoke-HSAutoSuggest
     }
 
-    # --- Backspace: delete char + trigger overlay ---
+    # --- Backspace ---
     Set-PSReadLineKeyHandler -Key Backspace -ScriptBlock {
-        if ($script:HS.IsVisible) {
-            Clear-HSOverlay
-            Reset-HSState
+        if ([datetime]::Now -lt $script:HS.PasteUntil) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
+            if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
+            return
         }
+        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
         [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
         }
-        Start-Sleep -Milliseconds 30
+        Start-Sleep -Milliseconds 100
         if ([Console]::KeyAvailable) {
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
         }
-        if ([datetime]::Now -lt $script:HS.PasteUntil) { return }
         Invoke-HSAutoSuggest
     }
 
