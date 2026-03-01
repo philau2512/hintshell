@@ -1,176 +1,209 @@
-# 🧠 HintShell — AI-Powered Terminal Auto-Suggestion Engine (Rust CLI)
+<h1 align="center">HintShell</h1>
+<p align="center"><strong>Real-time Command Auto-Suggestion Engine for Your Terminal</strong></p>
 
-[![NPM Version](https://img.shields.io/npm/v/hintshell?color=red&label=npm%20beta)](https://www.npmjs.com/package/hintshell)
-[![Rust CLI](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Cross Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)]()
-[![Shells](https://img.shields.io/badge/Shell-PowerShell%20%7C%20Bash%20%7C%20Zsh-4D4D4D.svg)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+<p align="center">
+  <a href="https://www.npmjs.com/package/hintshell"><img src="https://img.shields.io/npm/v/hintshell?color=CB3837&label=npm" alt="NPM Version" /></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Built_with-Rust-DEA584?logo=rust" alt="Rust" /></a>
+  <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4" alt="Platform" /></a>
+  <a href="#"><img src="https://img.shields.io/badge/Shell-PowerShell%20%7C%20Bash%20%7C%20Zsh-4D4D4D" alt="Shells" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License" /></a>
+</p>
 
-**HintShell** is a cross-platform, fuzzy-matching command intelligence engine built in Rust. It learns your terminal habits to provide real-time auto-suggestions and boosts your command-line productivity.
-
-*(Gợi ý lệnh terminal thông minh dựa trên lịch sử sử dụng của bạn. HintShell học từ mỗi lệnh bạn gõ, kết hợp fuzzy matching + frequency scoring để gợi ý chính xác nhất.)*
-
----
-
-## ✨ Features
-
-- 🔮 **Auto-suggest real-time** (PowerShell) — gợi ý hiện ngay khi gõ
-- 🔍 **Tab → fzf picker** (Bash/Zsh) — nhấn Tab để chọn lệnh
-- 📊 **Fuzzy matching** — gõ sai vẫn tìm được lệnh đúng
-- 🧮 **Frequency scoring** — lệnh dùng nhiều xếp trên
-- 🖥️ **Cross-platform** — Windows, macOS, Linux
-- 🐚 **Multi-shell** — PowerShell, Bash, Zsh
-
-## 🏗️ Architecture
-
-```
-┌─────────────┐     IPC      ┌──────────────────┐
-│  hintshell   │◄────────────►│  hintshell-core   │
-│  (CLI)       │  Named Pipe  │  (Daemon)         │
-│              │  or UDS      │  SQLite + Fuzzy   │
-└─────────────┘              └──────────────────┘
-       ▲
-       │ eval "$(hintshell hook bash)"
-       │ Import-Module HintShellModule
-       ▼
-┌─────────────────────────┐
-│  Shell Integration       │
-│  PowerShell / Bash / Zsh │
-└─────────────────────────┘
-```
-
-- **hintshell** — CLI client, gửi request qua IPC
-- **hintshell-core** — Daemon chạy nền, quản lý SQLite + suggestion engine
-- **IPC** — Named Pipe (Windows) / Unix Domain Socket (Linux/macOS)
+<p align="center">
+  HintShell is <strong>not</strong> a terminal emulator. It's a lightweight engine that <strong>embeds into your existing shell</strong> — PowerShell, Bash, or Zsh — and provides real-time command suggestions as you type. Think of it like autocomplete on steroids: a scrollable suggestion list with fuzzy matching, frequency ranking, and inline command descriptions.
+</p>
 
 ---
 
-## 🚀 Quick Start (Recommended)
+## ⚡ Why HintShell?
 
-Cài đặt cực kỳ đơn giản qua **NPM** (hỗ trợ Windows, Linux, macOS):
+Most shells offer basic, single-line autocomplete. HintShell replaces that with a **rich, interactive suggestion panel** — right inside your terminal.
+
+| Feature | HintShell | PowerShell <br>(PSReadLine) | Zsh <br>(zsh-autosuggestions) | Bash | Git Bash | Fish |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Suggestion UI** | Scrollable list | Single inline ghost | Single inline ghost | None | None | Single inline ghost |
+| **Prefix matching** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Frequency ranking** | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Command descriptions** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Cross-shell** | ✅ | PowerShell only | Zsh only | Bash only | — | Fish only |
+| **Learns from history** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **600+ built-in commands** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Works with any terminal** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+> **TL;DR** — Other shells give you one dim ghost suggestion. HintShell gives you a full list, ranked by how often you use each command, with a description of what every command does.
+
+---
+
+## 📸 How It Looks
+
+```
+PS> git ch
+  ┌───────────────────────────────────────────┐
+  │ > git checkout main          (12x)  [1/30]│
+  │   git cherry-pick             (3x)  [2/30]│
+  │   git checkout -b             (2x)  [3/30]│
+  │   git checkout --             (1x)  [4/30]│
+  │   git cherry-pick --abort     (1x)  [5/30]│
+  │ 💡 Switch branches or restore working tree│
+  └───────────────────────────────────────────┘
+```
+
+- **↑ / ↓** — Navigate the list
+- **Tab** — Accept the selected suggestion
+- **Enter** — Execute the current command line
+- **Esc** — Dismiss the panel
+
+---
+
+## 🚀 Installation
+
+### Option A — via NPM (Recommended)
+
+Works on **Windows**, **macOS**, and **Linux**. Automatically downloads the correct binary for your platform.
 
 ```bash
-# 1. Cài đặt global
 npm install -g hintshell
-
-# 2. Khởi tạo (tự động cấu hình shell)
 hintshell init
-
-# 3. Khởi động lại terminal hoặc reload config
-# PowerShell: . $PROFILE
-# Bash/Zsh: source ~/.bashrc (hoặc ~/.zshrc)
 ```
 
-### Build from Source
+Then **restart your terminal** (or reload your shell config):
 
-Nếu bạn muốn tự build từ mã nguồn:
+```bash
+# PowerShell
+. $PROFILE
+
+# Bash
+source ~/.bashrc
+
+# Zsh
+source ~/.zshrc
+```
+
+### Option B — Download from GitHub Releases
+
+Go to [**Releases**](https://github.com/philau2512/hintshell/releases), download the archive for your OS, extract it, and run:
+
+```bash
+hintshell init
+```
+
+### Option C — Build from Source
+
+Requires [Rust](https://rustup.rs/).
 
 ```bash
 git clone https://github.com/philau2512/hintshell.git
 cd hintshell
 cargo build --release
-./target/release/hintshell init
+./target/release/hintshell init    # Linux / macOS
+.\target\release\hintshell.exe init  # Windows
 ```
 
 ---
 
-## 🏗️ Architecture
+## 🗑️ Uninstall
 
-```
-┌─────────────┐     IPC      ┌──────────────────┐
-│  hintshell   │◄────────────►│  hintshell-core   │
-│  (CLI)       │  Named Pipe  │  (Daemon)         │
-│              │  or UDS      │  SQLite + Fuzzy   │
-└─────────────┘              └──────────────────┘
-       ▲
-       │ eval "$(hintshell hook bash)"
-       │ Import-Module HintShellModule
-       ▼
-┌─────────────────────────┐
-│  Shell Integration       │
-│  PowerShell / Bash / Zsh │
-└─────────────────────────┘
+### If installed via NPM
+
+```bash
+npm uninstall -g hintshell
 ```
 
-- **hintshell** — CLI client, gửi request qua IPC
-- **hintshell-core** — Daemon chạy nền, quản lý SQLite + suggestion engine
-- **IPC** — Named Pipe (Windows) / Unix Domain Socket (Linux/macOS)
+### Complete cleanup (all platforms)
+
+Remove the HintShell data directory and any shell configuration lines it added:
+
+**Windows (PowerShell):**
+```powershell
+# 1. Stop the daemon
+hs stop
+
+# 2. Remove data directory
+Remove-Item -Recurse -Force "$HOME\.hintshell"
+
+# 3. Edit your PowerShell profile and remove the HintShell lines
+notepad $PROFILE
+# Delete lines related to "HintShell" or "Import-Module HintShellModule"
+```
+
+**macOS / Linux:**
+```bash
+# 1. Stop the daemon
+hs stop
+
+# 2. Remove data directory
+rm -rf ~/.hintshell
+
+# 3. Remove the hook line from your shell config
+# For Bash: edit ~/.bashrc
+# For Zsh:  edit ~/.zshrc
+# Delete the line: eval "$(hintshell hook bash)"  (or zsh)
+```
 
 ---
 
 ## 📖 Usage
 
-### PowerShell (Auto-suggest)
-
-Gõ lệnh bình thường → gợi ý tự động hiện dưới dạng overlay:
-
-```
-PS> git ch
-  → git checkout main (12x)  [1/30]
-    git cherry-pick (3x)     [2/30]
-```
-
-- **↑/↓** — chọn gợi ý
-- **Tab** — chấp nhận
-- **Esc** — đóng
-- **Enter** — thực thi lệnh hiện tại
-
-### Bash / Zsh (Tab → fzf)
-
-Gõ lệnh → nhấn **Tab**:
+### CLI Commands
 
 ```bash
-$ docker  # nhấn Tab
+hs start       # Start the HintShell daemon
+hs stop        # Stop the daemon
+hs status      # Check daemon status
+hs init        # Set up shell integration (run once)
+```
+
+### PowerShell — Auto-Suggest Overlay
+
+Just type — suggestions appear automatically as a floating panel beneath your cursor.
+
+### Bash / Zsh — Tab to Suggest
+
+Type a partial command, then press **Tab** to open the suggestion picker (requires `fzf`).
+
+```bash
+$ docker ↹
 🧠 HintShell>
   docker compose up -d
   docker ps -a
   docker build -t myapp .
 ```
 
-- **Tab/Enter** — chọn
-- **Esc** — hủy
-
-### CLI Commands
-
-```bash
-hintshell status          # Xem trạng thái daemon
-hintshell stop            # Dừng daemon
-hintshell start           # Khởi động lại daemon
-hintshell init            # Chạy lại bộ cài đặt
-```
-
 ---
 
-## 🐧 Platform Notes
+## 🏗️ Architecture
 
-### Linux / WSL
+HintShell is a **client-daemon** system. It does **not** replace your terminal or shell. It plugs in via a thin hook.
 
-```bash
-# Cài dependencies
-sudo apt install -y build-essential fzf
-
-# Build & install
-cargo build --release
-./target/release/hintshell init
-source ~/.bashrc
+```
+┌─────────────────────────────────┐
+│  Your Terminal                  │
+│  (Windows Terminal, iTerm2,     │
+│   Alacritty, any terminal)      │
+│                                 │
+│  ┌───────────────────────────┐  │
+│  │  Your Shell               │  │
+│  │  (PowerShell / Bash / Zsh)│  │
+│  │       ▲                   │  │
+│  │       │ hook / module     │  │
+│  │       ▼                   │  │
+│  │  ┌─────────┐    IPC    ┌──────────────┐
+│  │  │   hs    │◄─────────►│ hintshell    │
+│  │  │  (CLI)  │ Named Pipe│ -core        │
+│  │  └─────────┘  or UDS   │ (Daemon)     │
+│  │                        │ SQLite+Fuzzy │
+│  │                        └──────────────┘
+│  └───────────────────────────┘  │
+└─────────────────────────────────┘
 ```
 
-### macOS
+| Component | Role |
+|---|---|
+| `hs` / `hintshell` | CLI client — sends queries over IPC |
+| `hintshell-core` | Background daemon — stores history, runs the suggestion engine (SQLite + fuzzy matching) |
+| Shell Hook | Thin integration layer — captures keystrokes and renders the suggestion UI |
 
-```bash
-brew install fzf
-cargo build --release
-./target/release/hintshell init
-source ~/.zshrc
-```
-
-### Windows (PowerShell)
-
-```powershell
-cargo build --release
-.\target\release\hintshell.exe init
-. $PROFILE
-```
+**IPC:** Named Pipe on Windows, Unix Domain Socket on Linux/macOS.
 
 ---
 
@@ -179,33 +212,57 @@ cargo build --release
 ```
 ~/.hintshell/
 ├── bin/
-│   ├── hintshell          # CLI binary
-│   └── hintshell-core     # Daemon binary
+│   ├── hintshell        # CLI binary
+│   ├── hintshell-core   # Daemon binary
+│   └── hs               # CLI alias
 ├── module/
-│   └── HintShellModule/   # PowerShell module
-└── history.db             # SQLite database
+│   └── HintShellModule/ # PowerShell module
+├── default-commands.json # 600+ built-in commands with descriptions
+└── history.db           # SQLite — your command history & frequencies
 ```
+
+---
+
+## ✨ Key Features
+
+- **🔍 Prefix Matching** — Type `git` and instantly see all commands starting with `git`, ranked by your usage frequency.
+- **📊 Frequency Ranking** — Commands you use most float to the top.
+- **💡 Command Descriptions** — See what each command does before you run it. 600+ commands pre-loaded across Git, Docker, NPM, Python, Kubernetes, Terraform, Cargo, and more.
+- **🖥️ Cross-Platform** — Windows, macOS, Linux. One tool, every OS.
+- **🐚 Multi-Shell** — PowerShell, Bash, Zsh. Same experience everywhere.
+- **⚡ Built in Rust** — Fast startup, tiny memory footprint, no runtime dependencies.
+- **🔒 Local & Private** — Everything stays on your machine. No cloud, no telemetry.
 
 ---
 
 ## 🛠️ Development
 
 ```bash
-# Build debug
+# Debug build
 cargo build
 
-# Run CLI trực tiếp
+# Run CLI directly
 cargo run --bin hintshell -- status
 
-# Run daemon trực tiếp
+# Run daemon directly
 cargo run --bin hintshell-core
 
-# Reload nhanh (PowerShell)
+# Quick reload (PowerShell)
 .\reload-hintshell.ps1
 ```
 
 ---
 
+## 🤝 Contributing
+
+Contributions are welcome! Feel free to open issues or submit pull requests.
+
 ## 📄 License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+<p align="center">
+  <strong>Stop memorizing commands. Let HintShell remember for you.</strong>
+</p>
