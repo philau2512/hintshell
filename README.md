@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/philau2512/hintshell/main/assets/logo.png" alt="HintShell Logo" width="120" />
+</p>
+
 <h1 align="center">HintShell</h1>
 <p align="center"><strong>Real-time Command Auto-Suggestion Engine for Your Terminal</strong></p>
 
