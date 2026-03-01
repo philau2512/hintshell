@@ -82,7 +82,7 @@ impl SuggestionEngine {
                     .unwrap_or(0) as f64;
 
                 let total_score =
-                    freq_score * 0.4 + recency_score * 0.3 + match_score * 0.3;
+                freq_score * 0.6 + recency_score * 0.15 + match_score * 0.25;
 
                 Suggestion {
                     command: entry.command,
