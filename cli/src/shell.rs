@@ -140,15 +140,50 @@ if (-not (Get-Module -Name HintShellModule)) {{
             Self::Zsh => {
                 let hs_bin = hintshell_home().join("bin").join("hintshell");
                 let hs_bin_str = hs_bin.to_string_lossy().replace('\\', "/");
+                let core_name = if cfg!(windows) { "hintshell-core.exe" } else { "hintshell-core" };
+                let core_bin = hintshell_home().join("bin").join(core_name);
+                let core_bin_str = core_bin.to_string_lossy().replace('\\', "/");
+
                 [
                     "\n# --- HintShell Zsh Integration ---\n".to_string(),
-                    format!("export HINTSHELL_DAEMON=\"{}\"\n", daemon_str),
                     format!("export HINTSHELL_BIN=\"{}\"\n", hs_bin_str),
+                    format!("export HINTSHELL_CORE=\"{}\"\n", core_bin_str),
+
+                    // Auto-start daemon if not running
+                    "\n_hintshell_ensure_daemon() {\n".to_string(),
+                    "    \"$HINTSHELL_BIN\" status >/dev/null 2>&1 && return\n".to_string(),
+                    "    [[ -x \"$HINTSHELL_CORE\" ]] && (\"$HINTSHELL_CORE\" >/dev/null 2>&1 &)\n".to_string(),
+                    "    sleep 0.2\n".to_string(),
+                    "}\n".to_string(),
+
+                    // Tab widget
+                    "\n_hintshell_tab() {\n".to_string(),
+                    "    _hintshell_ensure_daemon\n".to_string(),
+                    "    local typed=\"$LBUFFER\"\n".to_string(),
+                    "    [[ -z \"$typed\" ]] && { zle expand-or-complete; return }\n".to_string(),
+                    "    local suggestions\n".to_string(),
+                    "    suggestions=$(\"$HINTSHELL_BIN\" suggest \"$typed\" --limit 10 --format plain 2>/dev/null)\n".to_string(),
+                    "    [[ -z \"$suggestions\" ]] && { zle expand-or-complete; return }\n".to_string(),
+                    
+                    "    local count=$(echo \"$suggestions\" | wc -l)\n".to_string(),
+                    "    if [[ \"$count\" -eq 1 ]]; then\n".to_string(),
+                    "        LBUFFER=\"$suggestions\"\n".to_string(),
+                    "    else\n".to_string(),
+                    "        local selected\n".to_string(),
+                    "        selected=$(echo \"$suggestions\" | fzf --height 40% --reverse --no-sort --prompt=\"🧠 HintShell> \")\n".to_string(),
+                    "        [[ -n \"$selected\" ]] && LBUFFER=\"$selected\"\n".to_string(),
+                    "    fi\n".to_string(),
+                    "    zle reset-prompt\n".to_string(),
+                    "}\n".to_string(),
+                    "zle -N _hintshell_tab\n".to_string(),
+                    "bindkey '^I' _hintshell_tab\n".to_string(),
+
                     "\n_hintshell_precmd() {\n".to_string(),
+                    "    _hintshell_ensure_daemon\n".to_string(),
                     "    local last_cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n".to_string(),
                     "    if [[ -n \"$last_cmd\" && \"$last_cmd\" != \"$HINTSHELL_LAST_CMD\" ]]; then\n".to_string(),
                     "        HINTSHELL_LAST_CMD=\"$last_cmd\"\n".to_string(),
-                    "        (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh &>/dev/null &)\n".to_string(),
+                    "        (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh >/dev/null 2>&1 &)\n".to_string(),
                     "    fi\n}\n".to_string(),
                     "precmd_functions+=(_hintshell_precmd)\n".to_string(),
                 ].concat()
