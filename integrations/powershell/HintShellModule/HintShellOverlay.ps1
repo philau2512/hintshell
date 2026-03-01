@@ -162,7 +162,7 @@ function script:Draw-HSOverlay {
     # Top separator with scroll indicator
     $hasMore = $total -gt $script:HS_VIEWPORT_SIZE
     if ($hasMore) {
-        $pos = "$($offset + 1)-$($offset + $vp)/$total"
+        $pos = "$($SelectedIndex + 1)/$total"
         $sepW = $W - $pos.Length - 1
         $separator = ([string][char]0x2500 * [Math]::Max(0, $sepW))
         $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;238m$separator $e[38;5;244m$pos$e[0m")
