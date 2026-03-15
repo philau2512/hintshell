@@ -28,9 +28,11 @@ Most shells offer basic, single-line autocomplete. HintShell replaces that with 
 | **Suggestion UI** | Scrollable list | Single inline ghost | Single inline ghost | None | None | Single inline ghost |
 | **Prefix matching** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Frequency ranking** | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Smart ranking** | ✅ Recent → Default → Most Used → Others | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Command descriptions** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Cross-shell** | ✅ | PowerShell only | Zsh only | Bash only | — | Fish only |
 | **Learns from history** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Auto-start daemon** | ✅ | N/A | N/A | N/A | N/A | N/A |
 | **600+ built-in commands** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Works with any terminal** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
