@@ -129,6 +129,11 @@ impl SuggestionEngine {
         popular.sort_by(sort_by_score);
         others.sort_by(sort_by_score);
 
+        // Only keep tag "frequent" on the #1 most used, rest become regular
+        for s in popular.iter_mut().skip(1) {
+            s.source = "user".to_string();
+        }
+
         // Merge and dedup
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
