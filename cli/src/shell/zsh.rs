@@ -49,6 +49,10 @@ pub fn hook_script() -> String {
         "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh >/dev/null 2>&1 &)\n".to_string(),
         "}\n".to_string(),
         "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),
+
+        // Auto-start daemon on shell init
+        "\n# Auto-start daemon\n".to_string(),
+        "_hintshell_ensure_daemon\n".to_string(),
     ].concat()
 }
 
