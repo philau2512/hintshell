@@ -14,6 +14,7 @@ pub struct CommandEntry {
     pub last_used: DateTime<Utc>,
     pub directory: Option<String>,
     pub shell: Option<String>,
+    pub source: String,
 }
 
 #[derive(Deserialize)]
@@ -51,7 +52,8 @@ impl HistoryStore {
                 frequency   INTEGER NOT NULL DEFAULT 1,
                 last_used   TEXT NOT NULL,
                 directory   TEXT,
-                shell       TEXT
+                shell       TEXT,
+                source      TEXT DEFAULT 'user'
             );
 
             CREATE INDEX IF NOT EXISTS idx_command ON history(command);
@@ -72,6 +74,20 @@ impl HistoryStore {
 
         if !has_description {
             conn.execute("ALTER TABLE history ADD COLUMN description TEXT", [])?;
+        }
+
+        // Migration: Add source column if missing
+        let has_source: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('history') WHERE name='source'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_source {
+            conn.execute("ALTER TABLE history ADD COLUMN source TEXT DEFAULT 'user'", [])?;
         }
 
         Ok(())
@@ -99,7 +115,7 @@ impl HistoryStore {
             }
             None => {
                 conn.execute(
-                    "INSERT INTO history (command, frequency, last_used, directory, shell) VALUES (?1, 1, ?2, ?3, ?4)",
+                    "INSERT INTO history (command, frequency, last_used, directory, shell, source) VALUES (?1, 1, ?2, ?3, ?4, 'user')",
                     params![command, now, directory, shell],
                 )?;
             }
@@ -112,7 +128,7 @@ impl HistoryStore {
         let pattern = format!("{}%", prefix);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, command, frequency, last_used, directory, shell, description
+            "SELECT id, command, frequency, last_used, directory, shell, description, source
              FROM history
              WHERE command LIKE ?1
              ORDER BY frequency DESC, last_used DESC
@@ -131,6 +147,7 @@ impl HistoryStore {
                     directory: row.get(4)?,
                     shell: row.get(5)?,
                     description: row.get(6).unwrap_or(None),
+                    source: row.get(7).unwrap_or_else(|_| "user".to_string()),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -142,7 +159,7 @@ impl HistoryStore {
     pub fn get_all_commands(&self) -> SqlResult<Vec<CommandEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, command, frequency, last_used, directory, shell, description FROM history ORDER BY frequency DESC",
+            "SELECT id, command, frequency, last_used, directory, shell, description, source FROM history ORDER BY frequency DESC",
         )?;
 
         let entries = stmt
@@ -157,6 +174,7 @@ impl HistoryStore {
                     directory: row.get(4)?,
                     shell: row.get(5)?,
                     description: row.get(6).unwrap_or(None),
+                    source: row.get(7).unwrap_or_else(|_| "user".to_string()),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -200,7 +218,7 @@ impl HistoryStore {
 
                 if !exists {
                     conn.execute(
-                        "INSERT INTO history (command, frequency, last_used, directory, shell, description) VALUES (?1, 1, ?2, NULL, NULL, ?3)",
+                        "INSERT INTO history (command, frequency, last_used, directory, shell, description, source) VALUES (?1, 1, ?2, NULL, NULL, ?3, 'default')",
                         params![trimmed, now, desc],
                     ).map_err(|e| e.to_string())?;
                     count += 1;
@@ -218,6 +236,15 @@ impl HistoryStore {
             .map_err(|e| e.to_string())?;
 
         Ok(count)
+    }
+
+    #[cfg(test)]
+    pub fn set_last_used_for_test(&self, command: &str, time: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE history SET last_used = ?1 WHERE command = ?2",
+            params![time, command],
+        ).unwrap();
     }
 }
 
@@ -267,5 +294,25 @@ mod tests {
 
         let results = store.search_by_prefix("git", 10).unwrap();
         assert_eq!(results[0].command, "git commit -m \"msg\"");
+    }
+
+    #[test]
+    fn test_seed_defaults_sets_source() {
+        let store = HistoryStore::in_memory().unwrap();
+        let json = r#"{ "git": [{ "command": "git pull", "description": "pull changes" }] }"#;
+        store.seed_defaults(json).unwrap();
+        
+        let results = store.search_by_prefix("git", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "default");
+    }
+
+    #[test]
+    fn test_add_command_sets_user_source() {
+        let store = HistoryStore::in_memory().unwrap();
+        store.add_command("git push", None, None).unwrap();
+        let results = store.search_by_prefix("git", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "user");
     }
 }

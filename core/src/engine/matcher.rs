@@ -11,6 +11,7 @@ pub struct Suggestion {
     pub description: Option<String>,
     pub score: f64,
     pub frequency: i64,
+    pub source: String,
 }
 
 pub struct SuggestionEngine {
@@ -36,16 +37,8 @@ impl SuggestionEngine {
             return vec![];
         }
 
-        // Fast path: prefix match from SQLite
-        let prefix_results = self.store.search_by_prefix(input, limit).unwrap_or_default();
-
-        if prefix_results.len() >= limit {
-            return self.rank_entries(prefix_results, input, limit);
-        }
-
-        // Slow path: fuzzy match all commands
         let all_commands = self.store.get_all_commands().unwrap_or_default();
-        let mut candidates: Vec<(CommandEntry, i64)> = all_commands
+        let all_matches: Vec<(CommandEntry, i64)> = all_commands
             .into_iter()
             .filter_map(|entry| {
                 self.matcher
@@ -54,49 +47,72 @@ impl SuggestionEngine {
             })
             .collect();
 
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        let entries: Vec<CommandEntry> = candidates
-            .into_iter()
-            .map(|(entry, _)| entry)
-            .take(limit * 2) // take more for re-ranking
-            .collect();
-
-        self.rank_entries(entries, input, limit)
+        self.multipass_rank(all_matches, limit)
     }
 
-    fn rank_entries(&self, entries: Vec<CommandEntry>, input: &str, limit: usize) -> Vec<Suggestion> {
+    fn multipass_rank(&self, matches: Vec<(CommandEntry, i64)>, limit: usize) -> Vec<Suggestion> {
         let now = Utc::now();
+        let mut recent = Vec::new();
+        let mut defaults = Vec::new();
+        let mut popular = Vec::new();
+        let mut others = Vec::new();
 
-        let mut scored: Vec<Suggestion> = entries
-            .into_iter()
-            .map(|entry| {
-                let freq_score = (entry.frequency as f64).ln().max(0.0) * 10.0;
+        for (entry, match_score) in matches {
+            let age_seconds = (now - entry.last_used).num_seconds().max(1) as f64;
+            let freq_score = (entry.frequency as f64).ln().max(0.0) * 10.0;
+            let recency_score = 100.0 / age_seconds.sqrt();
+            let sub_score = freq_score * 0.6 + recency_score * 0.15 + (match_score as f64) * 0.25;
 
-                let age_seconds = (now - entry.last_used).num_seconds().max(1) as f64;
-                let recency_score = 100.0 / age_seconds.sqrt();
+            let suggestion = Suggestion {
+                command: entry.command.clone(),
+                description: entry.description.clone(),
+                score: sub_score,
+                frequency: entry.frequency,
+                source: entry.source.clone(),
+            };
 
-                let match_score = self
-                    .matcher
-                    .fuzzy_match(&entry.command, input)
-                    .unwrap_or(0) as f64;
+            // Categorize
+            if entry.source == "user" && age_seconds < 1800.0 {
+                recent.push(suggestion);
+            } else if entry.source == "default" {
+                defaults.push(suggestion);
+            } else if entry.frequency >= 3 {
+                popular.push(suggestion);
+            } else {
+                others.push(suggestion);
+            }
+        }
 
-                let total_score =
-                freq_score * 0.6 + recency_score * 0.15 + match_score * 0.25;
+        // Sort each tier internally by sub_score
+        let sort_by_score = |a: &Suggestion, b: &Suggestion| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        };
+        recent.sort_by(sort_by_score);
+        defaults.sort_by(sort_by_score);
+        popular.sort_by(sort_by_score);
+        others.sort_by(sort_by_score);
 
-                Suggestion {
-                    command: entry.command,
-                    description: entry.description,
-                    score: total_score,
-                    frequency: entry.frequency,
+        // Merge and dedup
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let all_tiers = vec![recent, defaults, popular, others];
+        for tier in all_tiers {
+            for s in tier {
+                if !seen.contains(&s.command) {
+                    seen.insert(s.command.clone());
+                    result.push(s);
+                    if result.len() >= limit {
+                        return result;
+                    }
                 }
-            })
-            .collect();
+            }
+        }
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
-        scored
+        result
     }
+
+
 
     pub fn add_command(&self, command: &str, directory: Option<&str>, shell: Option<&str>) -> Result<(), String> {
         self.store
@@ -137,6 +153,16 @@ mod tests {
         for _ in 0..5 {
             store.add_command("git commit -m \"initial\"", None, None).unwrap();
         }
+
+        // Add some default commands
+        let defaults = r#"{ "default": [
+            { "command": "cargo default", "description": "D1" },
+            { "command": "git clone", "description": "D2" }
+        ] }"#;
+        store.seed_defaults(defaults).unwrap();
+
+        // Make "git init" recent by re-adding it
+        store.add_command("git init", None, None).unwrap();
 
         SuggestionEngine::new(store)
     }
@@ -188,5 +214,61 @@ mod tests {
         for s in &suggestions {
             assert!(s.command.starts_with("cargo"));
         }
+    }
+
+    #[test]
+    fn test_multipass_ranking_order() {
+        let store = HistoryStore::in_memory().unwrap();
+        let engine = SuggestionEngine::new(store);
+        
+        // 1. Others
+        engine.add_command("git others", None, None).unwrap();
+        
+        // 2. Default
+        engine.seed_defaults(r#"{ "test": [{ "command": "git default", "description": "" }] }"#).unwrap();
+        
+        // 3. Most used
+        for _ in 0..5 {
+            engine.add_command("git most_used", None, None).unwrap();
+        }
+        
+        // We'll simulate `git others` by backdating its last_used so it doesn't count as recent.
+        // And backdate `git most_used` too.
+        engine.store.set_last_used_for_test("git others", "2000-01-01T00:00:00Z");
+        engine.store.set_last_used_for_test("git most_used", "2000-01-01T00:00:00Z");
+        
+        // 4. Recent
+        engine.add_command("git recent", None, None).unwrap();
+
+        let suggestions = engine.suggest("git", 10);
+        assert!(suggestions.len() >= 4);
+
+        // Tier 1: Recent ("git recent")
+        assert_eq!(suggestions[0].command, "git recent");
+        
+        // Tier 2: Default ("git default")
+        assert_eq!(suggestions[1].command, "git default");
+        
+        // Tier 3: Most used ("git most_used")
+        assert_eq!(suggestions[2].command, "git most_used");
+        
+        // Tier 4: Others ("git others")
+        assert_eq!(suggestions[3].command, "git others");
+    }
+
+    #[test]
+    fn test_multipass_dedup() {
+        let store = HistoryStore::in_memory().unwrap();
+        let engine = SuggestionEngine::new(store);
+        
+        // Command acts as BOTH default and recent
+        engine.seed_defaults(r#"{ "test": [{ "command": "git duplicate", "description": "" }] }"#).unwrap();
+        engine.add_command("git duplicate", None, None).unwrap();
+        
+        let suggestions = engine.suggest("git dup", 10);
+        
+        // Should only appear once
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].command, "git duplicate");
     }
 }

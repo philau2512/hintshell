@@ -196,6 +196,7 @@ fn process_request(
                     description: s.description,
                     score: s.score,
                     frequency: s.frequency,
+                    source: s.source,
                 })
                 .collect();
             info!("Returning {} suggestions", items.len());

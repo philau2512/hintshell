@@ -52,6 +52,7 @@ pub struct SuggestionItem {
     pub description: Option<String>,
     pub score: f64,
     pub frequency: i64,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,7 @@ mod tests {
                 description: None,
                 score: 95.0,
                 frequency: 10,
+                source: "user".to_string(),
             },
         ]);
         let json = serde_json::to_string(&resp).unwrap();
