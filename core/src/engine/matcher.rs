@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use serde::{Deserialize, Serialize};
@@ -52,74 +52,62 @@ impl SuggestionEngine {
 
     fn multipass_rank(&self, matches: Vec<(CommandEntry, i64)>, limit: usize) -> Vec<Suggestion> {
         let now = Utc::now();
-        let mut recent: Vec<(Suggestion, DateTime<Utc>)> = Vec::new();
+
+        // Collect all entries with their computed scores and last_used
+        let mut all_entries: Vec<(CommandEntry, f64, i64)> = matches
+            .into_iter()
+            .map(|(entry, match_score)| {
+                let age_seconds = (now - entry.last_used).num_seconds().max(1) as f64;
+                let freq_score = (entry.frequency as f64).ln().max(0.0) * 10.0;
+                let recency_score = 100.0 / age_seconds.sqrt();
+                let sub_score = freq_score * 0.6 + recency_score * 0.15 + (match_score as f64) * 0.25;
+                (entry, sub_score, match_score)
+            })
+            .collect();
+
+        // Find the single most recently used command (by last_used DESC)
+        let mut recent: Vec<Suggestion> = Vec::new();
+        if !all_entries.is_empty() {
+            all_entries.sort_by(|a, b| b.0.last_used.cmp(&a.0.last_used));
+            let (top_entry, top_score, _) = all_entries.remove(0);
+            // Only tag as recent if it was actually used by the user (frequency > 0)
+            if top_entry.frequency > 0 {
+                recent.push(Suggestion {
+                    command: top_entry.command,
+                    description: top_entry.description,
+                    score: top_score,
+                    frequency: top_entry.frequency,
+                    source: "recent".to_string(),
+                });
+            } else {
+                // Put it back for normal categorization
+                all_entries.insert(0, (top_entry, top_score, 0));
+            }
+        }
+
+        // Categorize remaining entries
         let mut defaults = Vec::new();
         let mut popular = Vec::new();
         let mut others = Vec::new();
 
-        for (entry, match_score) in matches {
-            let age_seconds = (now - entry.last_used).num_seconds().max(1) as f64;
-            let freq_score = (entry.frequency as f64).ln().max(0.0) * 10.0;
-            let recency_score = 100.0 / age_seconds.sqrt();
-            let sub_score = freq_score * 0.6 + recency_score * 0.15 + (match_score as f64) * 0.25;
-
-            // Categorize
-            if age_seconds < 1800.0 {
-                let suggestion = Suggestion {
-                    command: entry.command.clone(),
-                    description: entry.description.clone(),
-                    score: sub_score,
-                    frequency: entry.frequency,
-                    source: "recent".to_string(),
-                };
-                recent.push((suggestion, entry.last_used));
-            } else if entry.source == "default" {
-                let suggestion = Suggestion {
-                    command: entry.command.clone(),
-                    description: entry.description.clone(),
-                    score: sub_score,
-                    frequency: entry.frequency,
-                    source: "default".to_string(),
-                };
-                defaults.push(suggestion);
+        for (entry, sub_score, _) in all_entries {
+            if entry.source == "default" {
+                defaults.push(Suggestion {
+                    command: entry.command, description: entry.description,
+                    score: sub_score, frequency: entry.frequency, source: "default".to_string(),
+                });
             } else if entry.frequency >= 3 {
-                let suggestion = Suggestion {
-                    command: entry.command.clone(),
-                    description: entry.description.clone(),
-                    score: sub_score,
-                    frequency: entry.frequency,
-                    source: "frequent".to_string(),
-                };
-                popular.push(suggestion);
+                popular.push(Suggestion {
+                    command: entry.command, description: entry.description,
+                    score: sub_score, frequency: entry.frequency, source: "frequent".to_string(),
+                });
             } else {
-                let suggestion = Suggestion {
-                    command: entry.command.clone(),
-                    description: entry.description.clone(),
-                    score: sub_score,
-                    frequency: entry.frequency,
-                    source: entry.source.clone(),
-                };
-                others.push(suggestion);
+                others.push(Suggestion {
+                    command: entry.command, description: entry.description,
+                    score: sub_score, frequency: entry.frequency, source: entry.source,
+                });
             }
         }
-
-        // Recent tier: sort by last_used DESC, keep only the 1 most recent
-        recent.sort_by(|a, b| b.1.cmp(&a.1));
-        // Move non-top recent items back to their proper tiers
-        for (s, _) in recent.iter().skip(1) {
-            let mut moved = s.clone();
-            if moved.source == "recent" {
-                // Reclassify based on frequency
-                if moved.frequency >= 3 {
-                    moved.source = "frequent".to_string();
-                    popular.push(moved);
-                } else {
-                    moved.source = "user".to_string();
-                    others.push(moved);
-                }
-            }
-        }
-        let recent: Vec<Suggestion> = recent.into_iter().take(1).map(|(s, _)| s).collect();
 
         // Other tiers: sort by sub_score
         let sort_by_score = |a: &Suggestion, b: &Suggestion| {
