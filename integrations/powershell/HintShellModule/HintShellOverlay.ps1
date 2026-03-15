@@ -46,7 +46,7 @@ function script:Get-HSSuggestions {
         if ($seen.ContainsKey($cleanCmd)) {
             $seen[$cleanCmd].frequency += [int]$s.frequency
         } else {
-            $newObj = [PSCustomObject]@{ command = $cleanCmd; description = $s.description; frequency = [int]$s.frequency }
+            $newObj = [PSCustomObject]@{ command = $cleanCmd; description = $s.description; frequency = [int]$s.frequency; source = $s.source }
             $processed += $newObj
             $seen[$cleanCmd] = $newObj
         }
@@ -54,7 +54,6 @@ function script:Get-HSSuggestions {
 
     return @($processed |
         Where-Object { $_.command -like "$Typed*" } |
-        Sort-Object frequency -Descending |
         Select-Object -First 30)
 }
 #endregion
@@ -180,6 +179,7 @@ function script:Draw-HSOverlay {
         $s    = $Suggestions[$idx]
         $cmd  = $s.command.Replace("`r","").Replace("`n"," ").Replace("`t"," ").Trim()
         $freq = if ($s.frequency) { [int]$s.frequency } else { 1 }
+        $isRecent = ($s.source -eq 'recent')
 
         if ($cmd.Length -gt $cmdW) { $cmd = $cmd.Substring(0, $cmdW - 1) + [char]0x2026 }
 
@@ -187,7 +187,12 @@ function script:Draw-HSOverlay {
         $matchPrt = $cmd.Substring(0, $mLen)
         $restPrt  = if ($cmd.Length -gt $mLen) { $cmd.Substring($mLen) } else { '' }
         $pad      = ' ' * [Math]::Max(0, ($cmdW - $cmd.Length))
-        $countStr = "{0,3}x" -f $freq
+        
+        if ($isRecent) {
+            $countStr = "  " + [char]0x23F0
+        } else {
+            $countStr = "{0,3}x" -f $freq
+        }
 
         $scrollHint = ' '
         if ($hasMore) {

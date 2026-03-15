@@ -193,7 +193,7 @@ impl HistoryStore {
         let categories: HashMap<String, Vec<DefaultCmd>> = serde_json::from_str(json_content)
             .map_err(|e| format!("Failed to parse defaults JSON: {}", e))?;
 
-        let now = Utc::now().to_rfc3339();
+        let old_time = "2000-01-01T00:00:00Z";
         let conn = self.conn.lock().unwrap();
 
         conn.execute_batch("BEGIN TRANSACTION")
@@ -218,8 +218,8 @@ impl HistoryStore {
 
                 if !exists {
                     conn.execute(
-                        "INSERT INTO history (command, frequency, last_used, directory, shell, description, source) VALUES (?1, 1, ?2, NULL, NULL, ?3, 'default')",
-                        params![trimmed, now, desc],
+                        "INSERT INTO history (command, frequency, last_used, directory, shell, description, source) VALUES (?1, 0, ?2, NULL, NULL, ?3, 'default')",
+                        params![trimmed, old_time, desc],
                     ).map_err(|e| e.to_string())?;
                     count += 1;
                 } else {

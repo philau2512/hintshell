@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ impl SuggestionEngine {
 
     fn multipass_rank(&self, matches: Vec<(CommandEntry, i64)>, limit: usize) -> Vec<Suggestion> {
         let now = Utc::now();
-        let mut recent = Vec::new();
+        let mut recent: Vec<(Suggestion, DateTime<Utc>)> = Vec::new();
         let mut defaults = Vec::new();
         let mut popular = Vec::new();
         let mut others = Vec::new();
@@ -63,31 +63,54 @@ impl SuggestionEngine {
             let recency_score = 100.0 / age_seconds.sqrt();
             let sub_score = freq_score * 0.6 + recency_score * 0.15 + (match_score as f64) * 0.25;
 
-            let suggestion = Suggestion {
-                command: entry.command.clone(),
-                description: entry.description.clone(),
-                score: sub_score,
-                frequency: entry.frequency,
-                source: entry.source.clone(),
-            };
-
             // Categorize
-            if entry.source == "user" && age_seconds < 1800.0 {
-                recent.push(suggestion);
+            if age_seconds < 1800.0 {
+                let suggestion = Suggestion {
+                    command: entry.command.clone(),
+                    description: entry.description.clone(),
+                    score: sub_score,
+                    frequency: entry.frequency,
+                    source: "recent".to_string(),
+                };
+                recent.push((suggestion, entry.last_used));
             } else if entry.source == "default" {
+                let suggestion = Suggestion {
+                    command: entry.command.clone(),
+                    description: entry.description.clone(),
+                    score: sub_score,
+                    frequency: entry.frequency,
+                    source: "default".to_string(),
+                };
                 defaults.push(suggestion);
             } else if entry.frequency >= 3 {
+                let suggestion = Suggestion {
+                    command: entry.command.clone(),
+                    description: entry.description.clone(),
+                    score: sub_score,
+                    frequency: entry.frequency,
+                    source: "frequent".to_string(),
+                };
                 popular.push(suggestion);
             } else {
+                let suggestion = Suggestion {
+                    command: entry.command.clone(),
+                    description: entry.description.clone(),
+                    score: sub_score,
+                    frequency: entry.frequency,
+                    source: entry.source.clone(),
+                };
                 others.push(suggestion);
             }
         }
 
-        // Sort each tier internally by sub_score
+        // Recent tier: sort by last_used DESC (most recently used first)
+        recent.sort_by(|a, b| b.1.cmp(&a.1));
+        let recent: Vec<Suggestion> = recent.into_iter().map(|(s, _)| s).collect();
+
+        // Other tiers: sort by sub_score
         let sort_by_score = |a: &Suggestion, b: &Suggestion| {
             b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
         };
-        recent.sort_by(sort_by_score);
         defaults.sort_by(sort_by_score);
         popular.sort_by(sort_by_score);
         others.sort_by(sort_by_score);
@@ -175,8 +198,8 @@ mod tests {
         assert!(!suggestions.is_empty());
         assert!(suggestions.len() <= 5);
 
-        // "git status" used most -> should be first
-        assert_eq!(suggestions[0].command, "git status");
+        // "git init" was most recently added -> should be first (recent tier)
+        assert_eq!(suggestions[0].command, "git init");
     }
 
     #[test]
