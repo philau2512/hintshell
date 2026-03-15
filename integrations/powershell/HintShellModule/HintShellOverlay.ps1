@@ -179,7 +179,6 @@ function script:Draw-HSOverlay {
         $s    = $Suggestions[$idx]
         $cmd  = $s.command.Replace("`r","").Replace("`n"," ").Replace("`t"," ").Trim()
         $freq = if ($s.frequency) { [int]$s.frequency } else { 1 }
-        $isRecent = ($s.source -eq 'recent')
 
         if ($cmd.Length -gt $cmdW) { $cmd = $cmd.Substring(0, $cmdW - 1) + [char]0x2026 }
 
@@ -188,10 +187,12 @@ function script:Draw-HSOverlay {
         $restPrt  = if ($cmd.Length -gt $mLen) { $cmd.Substring($mLen) } else { '' }
         $pad      = ' ' * [Math]::Max(0, ($cmdW - $cmd.Length))
         
-        if ($isRecent) {
-            $countStr = "  " + [char]0x23F0
-        } else {
-            $countStr = "{0,3}x" -f $freq
+        $src = if ($s.source) { $s.source } else { '' }
+        $freqStr = "{0}x" -f $freq
+        switch ($src) {
+            'recent'   { $countStr = "$freqStr (recent)" }
+            'frequent' { $countStr = "$freqStr (most use)" }
+            default    { $countStr = "{0,5}x" -f $freq }
         }
 
         $scrollHint = ' '

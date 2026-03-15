@@ -103,9 +103,23 @@ impl SuggestionEngine {
             }
         }
 
-        // Recent tier: sort by last_used DESC (most recently used first)
+        // Recent tier: sort by last_used DESC, keep only the 1 most recent
         recent.sort_by(|a, b| b.1.cmp(&a.1));
-        let recent: Vec<Suggestion> = recent.into_iter().map(|(s, _)| s).collect();
+        // Move non-top recent items back to their proper tiers
+        for (s, _) in recent.iter().skip(1) {
+            let mut moved = s.clone();
+            if moved.source == "recent" {
+                // Reclassify based on frequency
+                if moved.frequency >= 3 {
+                    moved.source = "frequent".to_string();
+                    popular.push(moved);
+                } else {
+                    moved.source = "user".to_string();
+                    others.push(moved);
+                }
+            }
+        }
+        let recent: Vec<Suggestion> = recent.into_iter().take(1).map(|(s, _)| s).collect();
 
         // Other tiers: sort by sub_score
         let sort_by_score = |a: &Suggestion, b: &Suggestion| {
