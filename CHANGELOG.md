@@ -2,6 +2,12 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.1.5] - 2026-03-16
+
+### ✨ Bug Fixes
+- **Update Lock Fix**: Fixed "os error 32" on Windows by stopping the daemon before updating assets.
+- **Stable Update**: Removed @beta tag from default update command to ensure stability.
+
 ## [0.1.4] - 2026-03-16
 
 ### ✨ Improvements

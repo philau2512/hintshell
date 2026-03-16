@@ -258,20 +258,27 @@ function Invoke-HSWrapper {
         'update' {
             Write-Host "🔄 Updating HintShell via npm..." -ForegroundColor Cyan
             try {
-                npm install -g hintshell@beta
+                # 1. Stop daemon FIRST to release file locks on Windows
+                Stop-HintShell
+                
+                # 2. Update via npm (latest stable)
+                npm install -g hintshell
+                
                 Write-Host "📦 Re-initializing..." -ForegroundColor Cyan
-                # Find the CLI binary from npm global path
+                
+                # 3. Find the CLI binary from npm global path to run init
                 $npmGlobalBin = (npm root -g) -replace 'node_modules$', 'node_modules\hintshell\vendor'
                 $exeInit = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
                 $initPath = Join-Path $npmGlobalBin $exeInit
+                
                 if (Test-Path $initPath) {
                     & $initPath init
                 } else {
                     Write-Host "⚠️ Could not find binary to run init. Please run 'hintshell init' manually." -ForegroundColor Yellow
                 }
-                # Restart daemon
+                
+                # 4. Restart daemon
                 Write-Host "🔄 Restarting daemon..." -ForegroundColor Cyan
-                Stop-HintShell
                 Start-HintShell -Force
                 Write-Host "✅ Update complete!" -ForegroundColor Green
             } catch {
