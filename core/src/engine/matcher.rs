@@ -47,50 +47,54 @@ impl SuggestionEngine {
             })
             .collect();
 
-        self.multipass_rank(all_matches, limit)
+        self.multipass_rank(input, all_matches, limit)
     }
 
-    fn multipass_rank(&self, matches: Vec<(CommandEntry, i64)>, limit: usize) -> Vec<Suggestion> {
+    fn multipass_rank(&self, input: &str, matches: Vec<(CommandEntry, i64)>, limit: usize) -> Vec<Suggestion> {
         let now = Utc::now();
 
-        // Collect all entries with their computed scores and last_used
-        let mut all_entries: Vec<(CommandEntry, f64, i64)> = matches
+        // 1. Get the single most recent matching command directly from DB
+        let mut recent = Vec::new();
+        let mut recent_command = None;
+        if let Ok(Some(top_entry)) = self.store.get_most_recent_match(input) {
+            recent_command = Some(top_entry.command.clone());
+            let age_seconds = (now - top_entry.last_used).num_seconds().max(1) as f64;
+            // Recency score that decays slowly (by minutes)
+            let recency_score = 1000.0 / ((age_seconds / 60.0).sqrt() + 1.0);
+            let freq_score = (top_entry.frequency as f64).ln().max(0.0) * 10.0;
+            
+            recent.push(Suggestion {
+                command: top_entry.command,
+                description: top_entry.description,
+                score: freq_score * 0.35 + recency_score * 0.4 + 25.0, // Base boost for being #1 recent
+                frequency: top_entry.frequency,
+                source: "recent".to_string(),
+            });
+        }
+
+        // 2. Score and categorize remaining entries
+        let all_entries: Vec<(CommandEntry, f64)> = matches
             .into_iter()
+            .filter(|(entry, _)| {
+                // Skip the one already added to 'recent'
+                recent_command.as_ref().map_or(true, |cmd| cmd != &entry.command)
+            })
             .map(|(entry, match_score)| {
                 let age_seconds = (now - entry.last_used).num_seconds().max(1) as f64;
                 let freq_score = (entry.frequency as f64).ln().max(0.0) * 10.0;
-                let recency_score = 100.0 / age_seconds.sqrt();
-                let sub_score = freq_score * 0.6 + recency_score * 0.15 + (match_score as f64) * 0.25;
-                (entry, sub_score, match_score)
+                let recency_score = 1000.0 / ((age_seconds / 60.0).sqrt() + 1.0);
+                
+                // Weights: Recency (40%) + Frequency (35%) + Match Quality (25%)
+                let sub_score = freq_score * 0.35 + recency_score * 0.4 + (match_score as f64) * 0.25;
+                (entry, sub_score)
             })
             .collect();
 
-        // Find the single most recently used command (by last_used DESC)
-        let mut recent: Vec<Suggestion> = Vec::new();
-        if !all_entries.is_empty() {
-            all_entries.sort_by(|a, b| b.0.last_used.cmp(&a.0.last_used));
-            let (top_entry, top_score, _) = all_entries.remove(0);
-            // Only tag as recent if it was actually used by the user (frequency > 0)
-            if top_entry.frequency > 0 {
-                recent.push(Suggestion {
-                    command: top_entry.command,
-                    description: top_entry.description,
-                    score: top_score,
-                    frequency: top_entry.frequency,
-                    source: "recent".to_string(),
-                });
-            } else {
-                // Put it back for normal categorization
-                all_entries.insert(0, (top_entry, top_score, 0));
-            }
-        }
-
-        // Categorize remaining entries
         let mut defaults = Vec::new();
         let mut popular = Vec::new();
         let mut others = Vec::new();
 
-        for (entry, sub_score, _) in all_entries {
+        for (entry, sub_score) in all_entries {
             if entry.source == "default" {
                 defaults.push(Suggestion {
                     command: entry.command, description: entry.description,
@@ -109,7 +113,7 @@ impl SuggestionEngine {
             }
         }
 
-        // Other tiers: sort by sub_score
+        // Sort by score
         let sort_by_score = |a: &Suggestion, b: &Suggestion| {
             b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
         };

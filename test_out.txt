@@ -1,0 +1,51 @@
+warning: D:\Admin\Documents\PROJECTS\HintShell\cli\Cargo.toml: file `D:\Admin\Documents\PROJECTS\HintShell\cli\src\main.rs` found to be present in multiple build targets:
+  * `bin` target `hintshell`
+  * `bin` target `hs`
+   Compiling hintshell-core v0.1.3 (D:\Admin\Documents\PROJECTS\HintShell\core)
+warning: variable does not need to be mutable
+  --> core\src\engine\matcher.rs:76:13
+   |
+76 |         let mut all_entries: Vec<(CommandEntry, f64)> = matches
+   |             ----^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `hintshell-core` (lib) generated 1 warning (1 duplicate)
+warning: `hintshell-core` (lib test) generated 1 warning (run `cargo fix --lib -p hintshell-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running unittests src\lib.rs (target\debug\deps\hintshell_core-738b57f243f89b32.exe)
+
+running 16 tests
+test api::protocol::tests::test_deserialize_suggest_request ... ok
+test api::protocol::tests::test_add_command_request ... ok
+test api::protocol::tests::test_serialize_response ... ok
+test api::protocol::tests::test_serialize_suggest_request ... ok
+test storage::db::tests::test_frequency_increment ... ok
+test storage::db::tests::test_add_command_sets_user_source ... ok
+test storage::db::tests::test_add_and_search ... ok
+test storage::db::tests::test_seed_defaults_sets_source ... ok
+test engine::matcher::tests::test_multipass_dedup ... ok
+test engine::matcher::tests::test_multipass_ranking_order ... ok
+test engine::matcher::tests::test_cargo_suggestions ... ok
+test storage::db::tests::test_ranking_order ... ok
+test engine::matcher::tests::test_empty_input ... ok
+test engine::matcher::tests::test_prefix_suggestions ... ok
+test engine::matcher::tests::test_no_match ... ok
+test engine::matcher::tests::test_fuzzy_suggestions ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\main.rs (target\debug\deps\hintshell_core-4c1115c6a2451008.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hintshell_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

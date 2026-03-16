@@ -1,0 +1,6 @@
+warning: D:\Admin\Documents\PROJECTS\HintShell\cli\Cargo.toml: file `D:\Admin\Documents\PROJECTS\HintShell\cli\src\main.rs` found to be present in multiple build targets:
+  * `bin` target `hintshell`
+  * `bin` target `hs`
+error: package ID specification `core` did not match any packages
+
+help: a package with a similar name exists: `yoke`

@@ -182,6 +182,39 @@ impl HistoryStore {
         Ok(entries)
     }
 
+    /// Get the single most recent matching command.
+    pub fn get_most_recent_match(&self, input: &str) -> SqlResult<Option<CommandEntry>> {
+        let pattern = format!("%{}%", input); // Substring match for more flexibility
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, command, frequency, last_used, directory, shell, description, source
+             FROM history
+             WHERE command LIKE ?1
+             ORDER BY last_used DESC
+             LIMIT 1",
+        )?;
+
+        let mut entries = stmt.query_map(params![pattern], |row| {
+            Ok(CommandEntry {
+                id: Some(row.get(0)?),
+                command: row.get(1)?,
+                frequency: row.get(2)?,
+                last_used: row.get::<_, String>(3)?
+                    .parse::<DateTime<Utc>>()
+                    .unwrap_or_else(|_| Utc::now()),
+                directory: row.get(4)?,
+                shell: row.get(5)?,
+                description: row.get(6).unwrap_or(None),
+                source: row.get(7).unwrap_or_else(|_| "user".to_string()),
+            })
+        })?;
+
+        if let Some(entry) = entries.next() {
+            return Ok(Some(entry?));
+        }
+        Ok(None)
+    }
+
     pub fn get_total_commands(&self) -> SqlResult<i64> {
         let conn = self.conn.lock().unwrap();
         conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
