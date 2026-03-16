@@ -2,6 +2,14 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.1.4] - 2026-03-16
+
+### ✨ Improvements
+- **Persistent Recent Commands**: Fixed an issue where the `recent` command would disappear or get buried too quickly.
+- **Direct DB Recent Match**: Implementation of direct database query for the single most recent matching command to ensure high reliability.
+- **Balanced Ranking**: Rebalanced weights between recency (40%) and frequency (35%) to keep recently used commands at the top longer.
+- **Smooth Decaying**: Implemented a minute-based smoothing decay function for recency scores, preventing suggestions from "expiring" prematurely.
+
 ## [0.1.3] - 2026-03-16
 
 ### ✨ New Features
