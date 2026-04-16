@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::Notify;
-use tracing::{error, info, debug};
+use tracing::{error, info, debug, warn};
 
 use crate::api::protocol::*;
 use crate::engine::matcher::SuggestionEngine;
@@ -18,6 +18,71 @@ const PIPE_NAME: &str = r"\\.\pipe\hintshell";
 const SOCKET_PATH: &str = "/tmp/hintshell.sock";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// On Windows, named pipes are kernel objects that persist until all handles are closed.
+// When a process crashes without proper cleanup, the pipe may remain in a broken state.
+// This helper attempts to clean up such stale pipes by trying to connect to them
+// and then disconnecting, which releases the kernel object if it's in a broken state.
+#[cfg(windows)]
+fn delete_pipe_if_exists(pipe_name: &str) -> Result<(), String> {
+    use std::ptr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+
+    // Convert the pipe name to wide string
+    let wide_name: Vec<u16> = OsStr::new(pipe_name)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    // Try to open the existing pipe to verify it exists and clean it up
+    unsafe {
+        let handle = CreateFileW(
+            wide_name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        );
+
+        if handle != INVALID_HANDLE_VALUE {
+            // Connected to the stale pipe, close our handle to release it
+            CloseHandle(handle);
+            Ok(())
+        } else {
+            // Pipe doesn't exist or can't be accessed, which is fine
+            Err(format!("Pipe not accessible: {}", std::io::Error::last_os_error()))
+        }
+    }
+}
+
+// Windows API imports for pipe cleanup
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *mut u8,
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: *mut u8,
+    ) -> *mut u8;
+
+    fn CloseHandle(hObject: *mut u8) -> i32;
+}
+
+#[cfg(windows)]
+const GENERIC_READ: u32 = 0x80000000;
+#[cfg(windows)]
+const GENERIC_WRITE: u32 = 0x40000000;
+#[cfg(windows)]
+const OPEN_EXISTING: u32 = 3;
+#[cfg(windows)]
+const INVALID_HANDLE_VALUE: *mut u8 = !0 as *mut u8;
 
 pub struct HintShellServer {
     engine: Arc<SuggestionEngine>,
@@ -96,11 +161,24 @@ impl HintShellServer {
     pub async fn run(&self) -> Result<(), String> {
         info!("HintShell Daemon v{} starting on {}", VERSION, PIPE_NAME);
 
+        // Try to clean up any stale pipe from a previous crashed daemon
+        // This handles the case where the daemon was killed without proper cleanup
+        let _ = delete_pipe_if_exists(PIPE_NAME);
+
         loop {
-            let server = ServerOptions::new()
+            let server = match ServerOptions::new()
                 .first_pipe_instance(false)
                 .create(PIPE_NAME)
-                .map_err(|e| format!("Failed to create named pipe: {}", e))?;
+            {
+                Ok(server) => server,
+                Err(e) => {
+                    // If the pipe already exists from a crashed process, try to clean up and retry
+                    warn!("Failed to create pipe: {}, attempting cleanup...", e);
+                    let _ = delete_pipe_if_exists(PIPE_NAME);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+            };
 
             tokio::select! {
                 _ = server.connect() => {
