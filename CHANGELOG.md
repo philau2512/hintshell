@@ -2,6 +2,12 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.1.6] - 2026-07-02
+
+### ✨ Bug Fixes
+- **Permissions Fix**: Fix Unix socket connection failure (`os error 2`) on macOS and WSL by automatically setting executable permission (`chmod +x`) on copied binaries.
+- **Visual Clean**: Comment out welcome suggestions guides on shell startup to keep output clean.
+
 ## [0.1.5] - 2026-03-16
 
 ### ✨ Bug Fixes
