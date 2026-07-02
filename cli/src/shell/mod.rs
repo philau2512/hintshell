@@ -197,6 +197,8 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     let _ = fs::remove_file(&dest_hs); // Remove first to avoid "Text file busy" on Linux
     fs::copy(bin_path, &dest_hs)
         .map_err(|e| format!("Copy hintshell failed: {}", e))?;
+    #[cfg(unix)]
+    let _ = set_executable(&dest_hs);
 
     // 1b. Copy hs shorthand alias
     let hs_short = if cfg!(windows) { "hs.exe" } else { "hs" };
@@ -207,6 +209,8 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
             let _ = fs::remove_file(&dest_short);
             fs::copy(&hs_src, &dest_short)
                 .map_err(|e| format!("Copy hs failed: {}", e))?;
+            #[cfg(unix)]
+            let _ = set_executable(&dest_short);
         }
     }
 
@@ -219,6 +223,8 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
             let _ = fs::remove_file(&dest_core);
             fs::copy(&core_src, &dest_core)
                 .map_err(|e| format!("Copy core failed: {}", e))?;
+            #[cfg(unix)]
+            let _ = set_executable(&dest_core);
         }
     }
 
@@ -236,8 +242,11 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
             if let Some(parent) = bin_path.parent() {
                 let core_src = parent.join(core_name);
                 if core_src.exists() {
-                    fs::copy(&core_src, module_dir.join(core_name))
+                    let dest_module_core = module_dir.join(core_name);
+                    fs::copy(&core_src, &dest_module_core)
                         .map_err(|e| format!("Copy core to module failed: {}", e))?;
+                    #[cfg(unix)]
+                    let _ = set_executable(&dest_module_core);
                 }
             }
 
@@ -313,4 +322,13 @@ fn is_command_available(cmd: &str) -> bool {
     env::var_os("PATH").map_or(false, |paths| {
         env::split_paths(&paths).any(|p| p.join(&cmd).exists())
     })
+}
+
+#[cfg(unix)]
+fn set_executable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
 }
