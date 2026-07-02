@@ -177,10 +177,10 @@ function Start-HintShell {
         [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
     }
 
-    Write-Host "✨ HintShell Real-time Auto-Suggest Active:" -ForegroundColor Cyan
-    Write-Host "   Type anything    : Suggestions appear automatically" -ForegroundColor DarkGray
-    Write-Host "   [Up/Down]        : Navigate list" -ForegroundColor DarkGray
-    Write-Host "   [Tab]            : Accept  |  [Enter]: Run  |  [Esc]: Close" -ForegroundColor DarkGray
+    # Write-Host "✨ HintShell Real-time Auto-Suggest Active:" -ForegroundColor Cyan
+    # Write-Host "   Type anything    : Suggestions appear automatically" -ForegroundColor DarkGray
+    # Write-Host "   [Up/Down]        : Navigate list" -ForegroundColor DarkGray
+    # Write-Host "   [Tab]            : Accept  |  [Enter]: Run  |  [Esc]: Close" -ForegroundColor DarkGray
 }
 
 function Stop-HintShell {
