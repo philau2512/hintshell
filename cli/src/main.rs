@@ -188,6 +188,11 @@ async fn main() {
             }
         }
         Commands::Init => {
+            // Stop running daemon first to release file locks / update binary cleanly
+            let shutdown_request = HintShellRequest::Shutdown;
+            let _ = send_request(&shutdown_request).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
             println!("🔍 Detecting shells...");
             let shells = shell::detect_shells();
             if shells.is_empty() {

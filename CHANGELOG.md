@@ -2,9 +2,10 @@
 
 All notable changes to HintShell will be documented in this file.
 
-## [0.1.7] - 2026-07-02
+## [0.1.8] - 2026-07-02
 
 ### ✨ Bug Fixes
+- **Update Flow Fix**: Automatically stop running daemon during `hintshell init` to prevent Windows File Lock errors (`os error 32`) and Unix stale background processes during updates.
 - **Permissions Fix**: Fix Unix socket connection failure (`os error 2`) on macOS and WSL by automatically setting executable permission (`chmod +x`) on copied binaries.
 - **Visual Clean**: Comment out welcome suggestions guides on shell startup to keep output clean.
 - **Workflow Release**: Configure release workflow to publish production release rather than pre-release.
