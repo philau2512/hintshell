@@ -17,7 +17,7 @@ if (-not (Get-Module -Name HintShellModule)) {{
 /// Generate the init line for PowerShell profile
 pub fn install_line(module_dir_str: &str) -> String {
     format!(
-        "\n# HintShell Initialization\nImport-Module \"{}/HintShellModule.psd1\" -DisableNameChecking -ErrorAction SilentlyContinue\nStart-HintShell\n",
+        "\n# HintShell Initialization\nImport-Module \"{}/HintShellModule.psd1\" -DisableNameChecking -ErrorAction SilentlyContinue\n# Quiet on profile load; use 'hs start' / 'hs status' for verbose logs\nStart-HintShell -Quiet\n",
         module_dir_str
     )
 }

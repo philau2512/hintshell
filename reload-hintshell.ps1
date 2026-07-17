@@ -34,12 +34,35 @@ if (Test-Path $defaultsJson) { Copy-Item $defaultsJson $moduleDir -Force }
 
 # 3.5 Sync to ~/.hintshell/ (so new terminals get latest code)
 Write-Host "Syncing to ~/.hintshell/..." -ForegroundColor Yellow
-$installModuleDir = Join-Path $env:USERPROFILE ".hintshell\module"
-if (Test-Path $installModuleDir) {
-    Copy-Item "$moduleDir\*" $installModuleDir -Recurse -Force
-}
 $installRoot = Join-Path $env:USERPROFILE ".hintshell"
+$installModuleDir = Join-Path $installRoot "module"
+$installBinDir = Join-Path $installRoot "bin"
+if (-not (Test-Path $installModuleDir)) { New-Item -ItemType Directory -Path $installModuleDir -Force | Out-Null }
+if (-not (Test-Path $installBinDir)) { New-Item -ItemType Directory -Path $installBinDir -Force | Out-Null }
+
+Copy-Item "$moduleDir\*" $installModuleDir -Recurse -Force
 if (Test-Path $defaultsJson) { Copy-Item $defaultsJson $installRoot -Force }
+
+# Keep bin/ and module/ cores in sync (module used to lag and spawn old daemons)
+if (Test-Path $releaseBin) {
+    $coreBin = Join-Path $releaseBin "hintshell-core.exe"
+    $cliBin = Join-Path $releaseBin "hintshell.exe"
+    $hsBin = Join-Path $releaseBin "hs.exe"
+    if (Test-Path $coreBin) {
+        Copy-Item $coreBin $installBinDir -Force
+        Copy-Item $coreBin $installModuleDir -Force
+    }
+    if (Test-Path $cliBin) {
+        Copy-Item $cliBin $installBinDir -Force
+        Copy-Item $cliBin $installModuleDir -Force
+        if (Test-Path $hsBin) {
+            Copy-Item $hsBin $installBinDir -Force
+        } else {
+            Copy-Item $cliBin (Join-Path $installBinDir "hs.exe") -Force
+        }
+    }
+}
+
 # Remove disabled flag so dev reload always starts fresh
 $disabledFile = Join-Path $installRoot ".disabled"
 if (Test-Path $disabledFile) { Remove-Item $disabledFile -Force }

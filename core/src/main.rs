@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber;
 
 use hintshell_core::api::server::HintShellServer;
@@ -8,7 +8,7 @@ fn get_db_path() -> PathBuf {
     let old_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ShellMind");
-    
+
     let new_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("HintShell");
@@ -28,6 +28,94 @@ fn get_db_path() -> PathBuf {
     new_dir.join("history.db")
 }
 
+/// Process-wide single-instance guard (Windows named mutex / Unix lock file).
+/// Kept alive for the whole process so the OS releases it on exit.
+struct InstanceGuard {
+    #[cfg(windows)]
+    _handle: *mut std::ffi::c_void,
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+// Mutex handle is only closed on process exit; safe to share ownership marker.
+unsafe impl Send for InstanceGuard {}
+
+#[cfg(windows)]
+fn try_claim_single_instance() -> Option<InstanceGuard> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(
+            lp_mutex_attributes: *mut std::ffi::c_void,
+            b_initial_owner: i32,
+            lp_name: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn GetLastError() -> u32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+
+    // Local\ = current user session only (correct for IDE + external terminals)
+    let name: Vec<u16> = OsStr::new("Local\\HintShellCoreDaemon")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr());
+        if handle.is_null() {
+            warn!(
+                "CreateMutexW failed: {}",
+                std::io::Error::last_os_error()
+            );
+            // Fail open: still try to start; pipe first_instance is the backup.
+            return Some(InstanceGuard {
+                _handle: std::ptr::null_mut(),
+            });
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            return None;
+        }
+        Some(InstanceGuard { _handle: handle })
+    }
+}
+
+#[cfg(unix)]
+fn try_claim_single_instance() -> Option<InstanceGuard> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = "/tmp/hintshell.daemon.lock";
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o644)
+        .open(path)
+        .ok()?;
+
+    // LOCK_EX|LOCK_NB via flock
+    #[link(name = "c")]
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+
+    use std::os::unix::io::AsRawFd;
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if rc != 0 {
+        return None;
+    }
+    let _ = file.set_len(0);
+    let _ = write!(file, "{}", std::process::id());
+    Some(InstanceGuard { _file: file })
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -36,6 +124,17 @@ async fn main() {
         .init();
 
     info!("Starting HintShell Core Daemon...");
+
+    // Claim single-instance BEFORE opening DB / creating pipe.
+    // This stops IDE multi-terminal races from stacking hintshell-core processes.
+    let _instance_guard = match try_claim_single_instance() {
+        Some(g) => g,
+        None => {
+            info!("Another HintShell daemon instance already holds the single-instance lock; exiting.");
+            return;
+        }
+    };
+
     let db_path = get_db_path();
     info!("Database path: {:?}", db_path);
 

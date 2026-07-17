@@ -159,35 +159,81 @@ impl HintShellServer {
 
     #[cfg(windows)]
     pub async fn run(&self) -> Result<(), String> {
+        use std::io::ErrorKind;
+
         info!("HintShell Daemon v{} starting on {}", VERSION, PIPE_NAME);
 
-        // Try to clean up any stale pipe from a previous crashed daemon
-        // This handles the case where the daemon was killed without proper cleanup
-        let _ = delete_pipe_if_exists(PIPE_NAME);
+        // Claim the first pipe instance — if another healthy daemon holds it, exit.
+        // Do NOT delete_pipe_if_exists first: that can steal a live daemon's pipe.
+        let mut server = match ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(PIPE_NAME)
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let already = e.kind() == ErrorKind::AlreadyExists
+                    || e.kind() == ErrorKind::PermissionDenied
+                    || e.raw_os_error() == Some(183) // ERROR_ALREADY_EXISTS
+                    || e.raw_os_error() == Some(5); // ERROR_ACCESS_DENIED (common for first_pipe_instance)
+                if already {
+                    info!(
+                        "Another HintShell daemon already owns {}; exiting this instance.",
+                        PIPE_NAME
+                    );
+                    return Ok(());
+                }
+                // Stale/broken pipe: try one cleanup then retry as first instance
+                warn!("Failed to create first pipe instance: {}; cleanup + retry", e);
+                let _ = delete_pipe_if_exists(PIPE_NAME);
+                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                ServerOptions::new()
+                    .first_pipe_instance(true)
+                    .create(PIPE_NAME)
+                    .map_err(|e2| format!("Failed to create pipe after cleanup: {}", e2))?
+            }
+        };
+
+        info!("Daemon listening on {}", PIPE_NAME);
 
         loop {
-            let server = match ServerOptions::new()
-                .first_pipe_instance(false)
-                .create(PIPE_NAME)
-            {
-                Ok(server) => server,
-                Err(e) => {
-                    // If the pipe already exists from a crashed process, try to clean up and retry
-                    warn!("Failed to create pipe: {}, attempting cleanup...", e);
-                    let _ = delete_pipe_if_exists(PIPE_NAME);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    continue;
-                }
-            };
-
+            // Wait for a client on the current instance
             tokio::select! {
-                _ = server.connect() => {
-                    self.handle_client(server).await;
+                result = server.connect() => {
+                    if let Err(e) = result {
+                        error!("Pipe connect error: {}", e);
+                        server = ServerOptions::new()
+                            .first_pipe_instance(false)
+                            .create(PIPE_NAME)
+                            .map_err(|e2| format!("Failed to recreate pipe: {}", e2))?;
+                        continue;
+                    }
                 }
                 _ = self.shutdown.notified() => {
+                    info!("Shutdown signal received");
                     break;
                 }
             }
+
+            // Pre-create the NEXT instance so another client can connect while we handle this one
+            let next = ServerOptions::new()
+                .first_pipe_instance(false)
+                .create(PIPE_NAME);
+
+            // Move current connected server into the handler
+            let connected = server;
+            self.handle_client(connected).await;
+
+            // Promote next instance, or recreate if pre-create failed
+            server = match next {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to pre-create next pipe instance: {}; recreating", e);
+                    ServerOptions::new()
+                        .first_pipe_instance(false)
+                        .create(PIPE_NAME)
+                        .map_err(|e2| format!("Failed to recreate pipe: {}", e2))?
+                }
+            };
         }
         Ok(())
     }

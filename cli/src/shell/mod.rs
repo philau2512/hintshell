@@ -330,12 +330,18 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(&module_dir).map_err(|e| e.to_string())?;
 
-    // 1. Copy hintshell binary itself
+    let mut warnings: Vec<String> = Vec::new();
+
+    // 1. Copy hintshell binary itself (skip if we ARE the installed binary — Windows locks running .exe)
     let hs_name = if cfg!(windows) { "hintshell.exe" } else { "hintshell" };
     let dest_hs = bin_dir.join(hs_name);
-    let _ = fs::remove_file(&dest_hs); // Remove first to avoid "Text file busy" on Linux
-    fs::copy(bin_path, &dest_hs)
-        .map_err(|e| format!("Copy hintshell failed: {}", e))?;
+    match copy_replace(bin_path, &dest_hs) {
+        Ok(CopyResult::Copied) => {}
+        Ok(CopyResult::SkippedSame) => {
+            // Running from ~/.hintshell/bin/hintshell.exe — cannot self-overwrite; OK
+        }
+        Err(e) => warnings.push(format!("hintshell: {}", e)),
+    }
     #[cfg(unix)]
     let _ = set_executable(&dest_hs);
 
@@ -345,23 +351,35 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
         let hs_src = parent.join(hs_short);
         if hs_src.exists() {
             let dest_short = bin_dir.join(hs_short);
-            let _ = fs::remove_file(&dest_short);
-            fs::copy(&hs_src, &dest_short)
-                .map_err(|e| format!("Copy hs failed: {}", e))?;
+            match copy_replace(&hs_src, &dest_short) {
+                Ok(_) => {}
+                Err(e) => warnings.push(format!("hs: {}", e)),
+            }
             #[cfg(unix)]
             let _ = set_executable(&dest_short);
         }
     }
 
     // 2. Copy hintshell-core daemon (sibling of hintshell binary)
-    let core_name = if cfg!(windows) { "hintshell-core.exe" } else { "hintshell-core" };
+    let core_name = if cfg!(windows) {
+        "hintshell-core.exe"
+    } else {
+        "hintshell-core"
+    };
     if let Some(parent) = bin_path.parent() {
         let core_src = parent.join(core_name);
         if core_src.exists() {
             let dest_core = bin_dir.join(core_name);
-            let _ = fs::remove_file(&dest_core);
-            fs::copy(&core_src, &dest_core)
-                .map_err(|e| format!("Copy core failed: {}", e))?;
+            match copy_replace(&core_src, &dest_core) {
+                Ok(CopyResult::Copied) => {}
+                Ok(CopyResult::SkippedSame) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Copy core failed: {} (stop daemon first: hs stop)",
+                        e
+                    ));
+                }
+            }
             #[cfg(unix)]
             let _ = set_executable(&dest_core);
         }
@@ -374,16 +392,21 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
 
     match module_src {
         Some(src) => {
-            copy_dir_all(&src, &module_dir)
-                .map_err(|e| format!("Copy module failed: {}", e))?;
+            if same_path(&src, &module_dir) {
+                // Re-init from ~/.hintshell/bin — module already in place
+            } else {
+                copy_dir_all(&src, &module_dir)
+                    .map_err(|e| format!("Copy module failed: {}", e))?;
+            }
 
             // Also copy hintshell-core into module/ so $PSScriptRoot finds it
             if let Some(parent) = bin_path.parent() {
                 let core_src = parent.join(core_name);
                 if core_src.exists() {
                     let dest_module_core = module_dir.join(core_name);
-                    fs::copy(&core_src, &dest_module_core)
-                        .map_err(|e| format!("Copy core to module failed: {}", e))?;
+                    if let Err(e) = copy_replace(&core_src, &dest_module_core) {
+                        warnings.push(format!("module core: {}", e));
+                    }
                     #[cfg(unix)]
                     let _ = set_executable(&dest_module_core);
                 }
@@ -392,22 +415,76 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
             // Also copy default-commands.json into ~/.hintshell/ for runtime loading
             let defaults_src = src.join("default-commands.json");
             if defaults_src.exists() {
-                fs::copy(&defaults_src, home.join("default-commands.json"))
-                    .map_err(|e| format!("Copy default-commands.json failed: {}", e))?;
+                if let Err(e) = fs::copy(&defaults_src, home.join("default-commands.json")) {
+                    warnings.push(format!("default-commands.json: {}", e));
+                }
             }
         }
         None => {
             return Err(
-                "Could not find HintShellModule. Make sure you built the project correctly.".to_string()
+                "Could not find HintShellModule. Make sure you built the project correctly."
+                    .to_string(),
             );
         }
+    }
+
+    if !warnings.is_empty() {
+        // Non-fatal: CLI self-replace often fails on Windows when running from ~/.hintshell/bin
+        eprintln!(
+            "   ⚠️ Partial asset copy warnings: {}",
+            warnings.join("; ")
+        );
     }
 
     Ok(())
 }
 
+enum CopyResult {
+    Copied,
+    SkippedSame,
+}
+
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false,
+    }
+}
+
+/// Replace dest with src. Skips when src and dest are the same file (running self on Windows).
+fn copy_replace(src: &std::path::Path, dest: &std::path::Path) -> Result<CopyResult, String> {
+    if dest.exists() && same_path(src, dest) {
+        return Ok(CopyResult::SkippedSame);
+    }
+    // Best-effort remove first (helps Unix text-busy; on Windows locked files fail remove)
+    let _ = fs::remove_file(dest);
+    match fs::copy(src, dest) {
+        Ok(_) => Ok(CopyResult::Copied),
+        Err(e) => {
+            // Windows: sometimes can write to a new name then replace — try temp swap
+            #[cfg(windows)]
+            {
+                let tmp = dest.with_extension("exe.new");
+                let _ = fs::remove_file(&tmp);
+                if fs::copy(src, &tmp).is_ok() {
+                    // If dest is locked, rename won't work either — but try
+                    let _ = fs::remove_file(dest);
+                    if fs::rename(&tmp, dest).is_ok() {
+                        return Ok(CopyResult::Copied);
+                    }
+                    let _ = fs::remove_file(&tmp);
+                }
+            }
+            Err(e.to_string())
+        }
+    }
+}
+
 fn find_module_src(bin_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    // Priority A: adjacent 'module/' dir (for distributed release)
+    // Priority A: adjacent 'module/' dir (npm vendor / release zip layout)
     if let Some(parent) = bin_path.parent() {
         let adjacent = parent.join("module");
         if adjacent.join("HintShellModule.psd1").exists() {
@@ -415,7 +492,15 @@ fn find_module_src(bin_path: &std::path::Path) -> Option<std::path::PathBuf> {
         }
     }
 
-    // Priority B: walk up dirs to find 'integrations/powershell/HintShellModule' (dev mode)
+    // Priority B: already-installed module (re-init from ~/.hintshell/bin)
+    if let Some(home) = dirs::home_dir() {
+        let installed = home.join(".hintshell").join("module");
+        if installed.join("HintShellModule.psd1").exists() {
+            return Some(installed);
+        }
+    }
+
+    // Priority C: walk up dirs to find 'integrations/powershell/HintShellModule' (dev mode)
     let mut dir = bin_path.parent()?.to_path_buf();
     for _ in 0..6 {
         let candidate = dir.join("integrations/powershell/HintShellModule");

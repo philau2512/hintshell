@@ -2,6 +2,19 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.2.1] - 2026-07-18
+
+### 🐛 Bug Fixes
+- **Daemon single-instance (Windows)**: Named mutex + pipe first-instance so IDE multi-terminal races no longer stack `hintshell-core` processes.
+- **IDE offline / “Daemon is not running”**: Start/status verify real IPC health; prefer `~/.hintshell/bin` over stale `module/` binaries; profile start uses a file lock and waits before killing orphans.
+- **npm update while daemon running**: `postinstall` stops the daemon (IPC + force kill) before extracting binaries and runs `hintshell init` so `npm i -g hintshell@latest` can overwrite locked `.exe` files.
+- **`hs update` / CLI `update`**: Real upgrade path (stop → npm install → init/start), not version-check only; PowerShell update no longer writes `.disabled`.
+- **`hintshell init` file lock**: Force-kill before asset copy; skip self-overwrite of the running CLI on Windows; resolve module from `~/.hintshell/module` when re-init from `bin/`.
+
+### ✨ Improvements
+- Clearer logs on `hs start` / `hs stop` / `hs status` / `hs update` (success vs failure).
+- SQLite `busy_timeout` + WAL to reduce multi-process DB contention.
+
 ## [0.2.0] - 2026-07-18
 
 ### ✨ Improvements

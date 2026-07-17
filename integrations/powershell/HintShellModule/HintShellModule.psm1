@@ -1,7 +1,7 @@
 # HintShell PowerShell Module
 # Event-driven auto-suggest with overlay navigation via PSReadLine key bindings
 
-$ErrorActionPreference = 'SilentlyContinue'
+# Do NOT set global SilentlyContinue — it hides start/status failures in IDE terminals.
 $modulePath = $PSScriptRoot
 $configRoot = Join-Path $env:USERPROFILE ".hintshell"
 $disabledFile = Join-Path $configRoot ".disabled"
@@ -20,34 +20,113 @@ function Start-HintShell {
     Initialize HintShell integration and start the daemon.
     #>
     param(
-        [switch]$Force
+        [switch]$Force,
+        [switch]$Quiet
     )
 
     # Persistence check
     if ($Force) {
-        if (Test-Path $disabledFile) { Remove-Item $disabledFile -Force }
+        if (Test-Path $disabledFile) {
+            Remove-Item $disabledFile -Force -ErrorAction SilentlyContinue
+        }
     } elseif (Test-Path $disabledFile) {
+        if (-not $Quiet) {
+            Write-Host "⏸️  HintShell is disabled. Run 'hs start' to enable." -ForegroundColor DarkYellow
+        }
         return
     }
 
-    if (-not (Test-Path $configRoot)) { New-Item -ItemType Directory -Path $configRoot -Force | Out-Null }
+    if (-not (Test-Path $configRoot)) {
+        New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+    }
 
-    # 1. Start daemon if not running
-    $pipeExists = Test-Path "\\.\pipe\hintshell"
-    if (-not $pipeExists) {
-        $corePath = Join-Path $modulePath "hintshell-core.exe"
-        if (Test-Path $corePath) {
-            Start-Process -FilePath $corePath -WindowStyle Hidden
-            Write-Host "🚀 HintShell daemon started." -ForegroundColor Cyan
-            Start-Sleep -Milliseconds 600
-        } else {
-            Write-Warning "hintshell-core.exe not found. Run: cargo build first."
-            return
+    # 1. Ensure ONE healthy daemon (IPC), with cross-terminal lock to stop IDE races
+    $alive = Test-HSDaemonAlive -TimeoutMs 800 -Retries 2
+    if ($alive) {
+        if ($Force -and -not $Quiet) {
+            Write-Host "✅ Daemon already running and healthy." -ForegroundColor Green
+        }
+    } else {
+        $gotLock = Enter-HSStartLock -TimeoutMs 8000
+        try {
+            # Re-check after lock (or while waiting for another terminal's start)
+            if (Test-HSDaemonAlive -TimeoutMs 1000 -Retries 2) {
+                if ($Force -and -not $Quiet) {
+                    Write-Host "✅ Daemon became healthy (started by another session)." -ForegroundColor Green
+                }
+            } else {
+                $orphanCount = Get-HSDaemonProcessCount
+                if ($orphanCount -gt 0) {
+                    if (-not $Quiet) {
+                        Write-Host "🧹 Found $orphanCount process(es) not answering IPC; waiting briefly..." -ForegroundColor Yellow
+                    }
+                    $becameReady = $false
+                    for ($w = 1; $w -le 8; $w++) {
+                        Start-Sleep -Milliseconds 200
+                        if (Test-HSDaemonAlive -TimeoutMs 600 -Retries 1) {
+                            $becameReady = $true
+                            if (-not $Quiet) {
+                                Write-Host "✅ Daemon became healthy while waiting (~$($w * 200)ms)." -ForegroundColor Green
+                            }
+                            break
+                        }
+                    }
+                    if (-not $becameReady) {
+                        if (-not $Quiet) {
+                            Write-Host "   Still unhealthy — stopping stale process(es)..." -ForegroundColor DarkGray
+                        }
+                        $killed = Stop-HSDaemonProcesses -Quiet:$Quiet
+                        if (-not $Quiet) {
+                            Write-Host "   Stopped $killed process(es)." -ForegroundColor DarkGray
+                        }
+                    }
+                }
+
+                if (-not (Test-HSDaemonAlive -TimeoutMs 600 -Retries 1)) {
+                    $corePath = Resolve-HSCorePath -ModulePath $modulePath -ConfigRoot $configRoot
+                    if (-not $corePath) {
+                        Write-Host "❌ hintshell-core.exe not found in ~/.hintshell/bin or module." -ForegroundColor Red
+                        Write-Host "   Run: cargo build --release && hs init   (or reload-hintshell.ps1)" -ForegroundColor DarkGray
+                    } else {
+                        if (-not $Quiet) {
+                            Write-Host "🚀 Starting daemon: $corePath" -ForegroundColor Cyan
+                        }
+                        try {
+                            $proc = Start-Process -FilePath $corePath -WindowStyle Hidden -PassThru -ErrorAction Stop
+                            if (-not $Quiet) {
+                                Write-Host "   Spawned PID $($proc.Id)" -ForegroundColor DarkGray
+                            }
+                        } catch {
+                            Write-Host "❌ Failed to start daemon: $_" -ForegroundColor Red
+                        }
+
+                        $ready = $false
+                        for ($i = 1; $i -le 20; $i++) {
+                            Start-Sleep -Milliseconds 200
+                            if (Test-HSDaemonAlive -TimeoutMs 800 -Retries 1) {
+                                $ready = $true
+                                if (-not $Quiet) {
+                                    Write-Host "✅ Daemon started successfully (ready after ~$($i * 200)ms)." -ForegroundColor Green
+                                }
+                                break
+                            }
+                        }
+                        if (-not $ready) {
+                            Write-Host "❌ Daemon process started but IPC is not ready." -ForegroundColor Red
+                            Write-Host "   Pipe: \\.\pipe\hintshell  |  Processes: $(Get-HSDaemonProcessCount)" -ForegroundColor DarkGray
+                            Write-Host "   Core: $corePath" -ForegroundColor DarkGray
+                            Write-Host "   Tip: hs stop ; hs start" -ForegroundColor DarkGray
+                        }
+                    }
+                }
+            }
+        } finally {
+            if ($gotLock) { Exit-HSStartLock }
         }
     }
 
     # 2. Disable PSReadLine built-in prediction
-    Set-PSReadLineOption -PredictionSource None
+    try { Set-PSReadLineOption -PredictionSource None -ErrorAction SilentlyContinue } catch { }
 
     # 3. Key Bindings
     $script:HSBoundKeys = @()
@@ -188,54 +267,76 @@ function Stop-HintShell {
     .SYNOPSIS
     Stop the HintShell daemon and disable auto-start.
     #>
+    Write-Host "▶ hs stop" -ForegroundColor Cyan
     # Create persistent disable flag
     if (-not (Test-Path $configRoot)) { New-Item -ItemType Directory -Path $configRoot -Force | Out-Null }
     New-Item -ItemType File -Path $disabledFile -Force | Out-Null
 
-    $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-    $cliPath = Join-Path $modulePath $exeName
-    if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
+    $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
 
-    if (Test-Path $cliPath) {
+    if ($cliPath) {
+        Write-Host "🛑 Stopping daemon via CLI: $cliPath" -ForegroundColor Yellow
         & $cliPath stop
     } else {
-        Get-Process hintshell-core -ErrorAction SilentlyContinue | Stop-Process -Force
+        $killed = Stop-HSDaemonProcesses
+        Write-Host "🛑 Stopped $killed hintshell-core process(es) (CLI not found)." -ForegroundColor Yellow
     }
 
     # Unbind ALL character keys back to SelfInsert
     foreach ($k in $script:HSBoundKeys) {
-        try { Set-PSReadLineKeyHandler -Key $k -Function SelfInsert } catch {}
+        try { Set-PSReadLineKeyHandler -Key $k -Function SelfInsert -ErrorAction SilentlyContinue } catch {}
     }
 
     # Unbind special keys
-    Set-PSReadLineKeyHandler -Key Tab -Function TabCompleteNext
-    Set-PSReadLineKeyHandler -Key UpArrow -Function PreviousHistory
-    Set-PSReadLineKeyHandler -Key DownArrow -Function NextHistory
-    Set-PSReadLineKeyHandler -Key Backspace -Function BackwardDeleteChar
-    Set-PSReadLineKeyHandler -Key Spacebar -Function SelfInsert
-    Set-PSReadLineKeyHandler -Key Enter -Function AcceptLine
-    Set-PSReadLineKeyHandler -Key Escape -Function RevertLine
+    try {
+        Set-PSReadLineKeyHandler -Key Tab -Function TabCompleteNext -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key UpArrow -Function PreviousHistory -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key DownArrow -Function NextHistory -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key Backspace -Function BackwardDeleteChar -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key Spacebar -Function SelfInsert -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key Enter -Function AcceptLine -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key Escape -Function RevertLine -ErrorAction SilentlyContinue
+    } catch {}
 
-    Write-Host "🛑 HintShell stopped and disabled. Start it again with 'hs start'" -ForegroundColor Yellow
+    Write-Host "✅ HintShell stopped and disabled. Start it again with 'hs start'" -ForegroundColor Yellow
 }
 
 function Get-HintShellStatus {
-    $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-    $cliPath = Join-Path $modulePath $exeName
-    if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
-    
+    Write-Host "▶ hs status" -ForegroundColor Cyan
+
+    $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+    $corePath = Resolve-HSCorePath -ModulePath $modulePath -ConfigRoot $configRoot
+    $procCount = Get-HSDaemonProcessCount
+    $alive = Test-HSDaemonAlive -TimeoutMs 1200 -Retries 2
+
     if (Test-Path $disabledFile) {
         Write-Host "⏸️  HintShell UI is currently DISABLED (Run 'hs start' to enable)" -ForegroundColor DarkYellow
     } else {
         Write-Host "✨ HintShell UI is ACTIVE in this session" -ForegroundColor Cyan
     }
 
-    if (Test-Path $cliPath) { 
-        # Get status from daemon
-        & $cliPath status
+    Write-Host "   Module : $modulePath" -ForegroundColor DarkGray
+    Write-Host "   CLI    : $(if ($cliPath) { $cliPath } else { '(not found)' })" -ForegroundColor DarkGray
+    Write-Host "   Core   : $(if ($corePath) { $corePath } else { '(not found)' })" -ForegroundColor DarkGray
+    Write-Host "   Processes hintshell-core: $procCount" -ForegroundColor DarkGray
+    Write-Host "   IPC alive: $alive" -ForegroundColor DarkGray
 
-    } else { 
-        Write-Warning "hintshell binary not found." 
+    if ($alive) {
+        Write-Host "✅ Daemon is running and answering IPC." -ForegroundColor Green
+    } else {
+        Write-Host "❌ Daemon is not running (IPC failed)." -ForegroundColor Red
+        if ($procCount -gt 0) {
+            Write-Host "   ⚠️ $procCount process(es) exist but are NOT healthy — run: hs start" -ForegroundColor Yellow
+        } else {
+            Write-Host "   Run: hs start" -ForegroundColor DarkGray
+        }
+    }
+
+    if ($cliPath) {
+        Write-Host "--- CLI status ---" -ForegroundColor DarkGray
+        & $cliPath status
+    } elseif (-not $alive) {
+        Write-Warning "hintshell binary not found in ~/.hintshell/bin or module."
     }
 }
 
@@ -247,7 +348,15 @@ function Invoke-HSWrapper {
 
     switch ($Command) {
         'start' {
+            Write-Host "▶ hs start" -ForegroundColor Cyan
             Start-HintShell -Force
+            $alive = Test-HSDaemonAlive -TimeoutMs 1200 -Retries 2
+            $procs = Get-HSDaemonProcessCount
+            if ($alive) {
+                Write-Host "✅ hs start complete — daemon healthy (processes=$procs)." -ForegroundColor Green
+            } else {
+                Write-Host "❌ hs start finished but daemon is still NOT healthy (processes=$procs)." -ForegroundColor Red
+            }
         }
         'stop' {
             Stop-HintShell
@@ -256,57 +365,78 @@ function Invoke-HSWrapper {
             Get-HintShellStatus
         }
         'update' {
-            Write-Host "🔄 Updating HintShell via npm..." -ForegroundColor Cyan
+            Write-Host "▶ hs update" -ForegroundColor Cyan
             try {
                 # 1. Stop daemon FIRST to release file locks on Windows
-                Stop-HintShell
-                
-                # 2. Update via npm (latest stable)
-                npm install -g hintshell
-                
-                Write-Host "📦 Re-initializing..." -ForegroundColor Cyan
-                
-                # 3. Find the CLI binary from npm global path to run init
-                $npmGlobalBin = (npm root -g) -replace 'node_modules$', 'node_modules\hintshell\vendor'
+                Write-Host "🛑 Stopping daemon (release file locks)..." -ForegroundColor Yellow
+                $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+                if ($cliPath) {
+                    & $cliPath stop
+                } else {
+                    $killed = Stop-HSDaemonProcesses
+                    Write-Host "   Stopped $killed process(es) (CLI not found)." -ForegroundColor DarkGray
+                }
+                # Do not create .disabled flag here — user wants update, not disable
+
+                # 2. Update via npm (postinstall also stops daemon + runs init)
+                Write-Host "🔄 npm install -g hintshell@latest ..." -ForegroundColor Cyan
+                npm install -g hintshell@latest
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "❌ npm install failed (exit $LASTEXITCODE)." -ForegroundColor Red
+                    Write-Host "   Tip: taskkill /F /IM hintshell-core.exe ; npm i -g hintshell@latest" -ForegroundColor DarkGray
+                    return
+                }
+                Write-Host "✅ npm install finished." -ForegroundColor Green
+
+                # 3. Ensure module + daemon (init may already have run in postinstall)
+                Write-Host "📦 Ensuring local install (hintshell init)..." -ForegroundColor Cyan
+                $npmVendor = Join-Path ((npm root -g) | ForEach-Object { $_ }) "hintshell\vendor"
                 $exeInit = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-                $initPath = Join-Path $npmGlobalBin $exeInit
-                
-                if (Test-Path $initPath) {
+                $initPath = Join-Path $npmVendor $exeInit
+                if (-not (Test-Path $initPath)) {
+                    $initPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+                }
+
+                if ($initPath -and (Test-Path $initPath)) {
                     & $initPath init
                 } else {
                     Write-Host "⚠️ Could not find binary to run init. Please run 'hintshell init' manually." -ForegroundColor Yellow
                 }
-                
-                # 4. Restart daemon
-                Write-Host "🔄 Restarting daemon..." -ForegroundColor Cyan
+
+                # 4. Reload module from ~/.hintshell and restart UI
+                Write-Host "🔄 Reloading module + starting daemon..." -ForegroundColor Cyan
+                $freshModule = Join-Path $configRoot "module\HintShellModule.psd1"
+                if (Test-Path $freshModule) {
+                    Remove-Module HintShellModule -Force -ErrorAction SilentlyContinue
+                    Import-Module $freshModule -Force -DisableNameChecking -ErrorAction SilentlyContinue
+                }
                 Start-HintShell -Force
-                Write-Host "✅ Update complete!" -ForegroundColor Green
+                if (Test-HSDaemonAlive -TimeoutMs 1200 -Retries 2) {
+                    Write-Host "✅ hs update complete — daemon healthy." -ForegroundColor Green
+                } else {
+                    Write-Host "⚠️ Update installed but daemon not healthy. Run: hs start" -ForegroundColor Yellow
+                }
             } catch {
-                Write-Error "❌ Update failed. Do you have npm installed?"
+                Write-Error "❌ Update failed: $_"
             }
         }
         '--version' {
-            $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-            $cliPath = Join-Path $modulePath $exeName
-            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
-            if (Test-Path $cliPath) { & $cliPath --version } else { Write-Host "HintShell PowerShell Module Configured" }
+            $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+            if ($cliPath) { & $cliPath --version } else { Write-Host "HintShell PowerShell Module Configured" }
         }
         '-v' {
-            $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-            $cliPath = Join-Path $modulePath $exeName
-            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
-            if (Test-Path $cliPath) { & $cliPath -v } else { Write-Host "HintShell PowerShell Module Configured" }
+            $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+            if ($cliPath) { & $cliPath -v } else { Write-Host "HintShell PowerShell Module Configured" }
         }
         default {
+            $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
             $exeName = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-            $cliPath = Join-Path $modulePath $exeName
-            if (-not (Test-Path $cliPath)) { $cliPath = Join-Path $configRoot "bin\$exeName" }
-            
+
             # Filter out empty args to avoid 'unexpected argument' error
             $cleanArgs = @()
             if ($Args) { $cleanArgs = @($Args | Where-Object { $_ -ne '' -and $null -ne $_ }) }
 
-            if (Test-Path $cliPath) {
+            if ($cliPath) {
                 if ($Command) {
                     if ($cleanArgs.Count -gt 0) { & $cliPath $Command @cleanArgs } else { & $cliPath $Command }
                 } else { & $cliPath }

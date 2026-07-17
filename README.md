@@ -93,11 +93,33 @@ source ~/.bashrc
 
 ---
 
-## ✨ What's new in 0.2.0
+## ✨ What's new in 0.2.1
 
-- PowerShell: multi-line paste no longer covers the buffer with the suggestion panel; narrow terminals use a compact layout.
-- Git Bash / Bash / Zsh: reliable fzf picker (WinGet Links shim fix) and init that prefers `~/.hintshell` over npm shims.
-- See [CHANGELOG.md](./CHANGELOG.md) for the full list.
+- Daemon single-instance + IDE terminal reliability (no stacked `hintshell-core`, IPC health checks).
+- Safe update while running: `npm i -g hintshell@latest` / `hs update` stop the daemon before replacing Windows binaries.
+- Clearer start/status/update logs. See [CHANGELOG.md](./CHANGELOG.md).
+
+## 🔄 Updating
+
+While the daemon is running, Windows locks `hintshell-core.exe`. Use:
+
+```bash
+# Recommended
+hs update
+
+# Or raw npm — postinstall stops the daemon and runs init
+npm i -g hintshell@latest
+```
+
+If you still hit a file lock (`os error 32` / "being used by another process"):
+
+```bash
+hs stop
+# or: taskkill /F /IM hintshell-core.exe
+npm i -g hintshell@latest
+hintshell init
+```
+
 ## 🗑️ Uninstallation
 
 If you need to remove HintShell, it now comes with a clean uninstaller that handles everything for you:
@@ -119,7 +141,7 @@ npm uninstall -g hintshell
 hs status      # Check if the daemon is running and see stats
 hs start       # Manually start the daemon
 hs stop        # Stop the daemon
-hs update      # Check for new versions
+hs update      # Stop daemon, npm install -g, init, restart
 hs uninstall   # Completely remove shell integration and binaries
 ```
 

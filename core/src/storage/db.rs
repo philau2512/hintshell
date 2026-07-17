@@ -30,6 +30,9 @@ pub struct HistoryStore {
 impl HistoryStore {
     pub fn new(db_path: &PathBuf) -> SqlResult<Self> {
         let conn = Connection::open(db_path)?;
+        // Avoid multi-process hang if a stale reader briefly holds the DB.
+        conn.busy_timeout(std::time::Duration::from_secs(3))?;
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         let store = Self { conn: Mutex::new(conn) };
         store.init_tables()?;
         Ok(store)
