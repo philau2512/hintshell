@@ -4,13 +4,144 @@ mod zsh;
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ~/.hintshell/
 pub fn hintshell_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".hintshell")
+}
+
+/// Convert a Windows path to a Git Bash / MSYS path (`C:\Users\x` → `/c/Users/x`).
+/// On Unix, just normalizes separators.
+pub fn to_posix_path(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        format!("/{}{}", drive, &s[2..])
+    } else {
+        s
+    }
+}
+
+/// Absolute path to the CLI binary for shell hooks (`.exe` on Windows).
+pub fn cli_bin_posix() -> String {
+    let name = if cfg!(windows) {
+        "hintshell.exe"
+    } else {
+        "hintshell"
+    };
+    to_posix_path(&hintshell_home().join("bin").join(name))
+}
+
+/// Absolute path to the daemon binary for shell hooks.
+pub fn core_bin_posix() -> String {
+    let name = if cfg!(windows) {
+        "hintshell-core.exe"
+    } else {
+        "hintshell-core"
+    };
+    to_posix_path(&hintshell_home().join("bin").join(name))
+}
+
+/// Bin directory in POSIX form for PATH export.
+pub fn bin_dir_posix() -> String {
+    to_posix_path(&hintshell_home().join("bin"))
+}
+
+/// Shared fzf resolver for Bash/Zsh.
+/// Git Bash cannot exec WinGet "Links" reparse-point shims (Permission denied);
+/// the real binary under WinGet/Packages works when called by absolute path.
+pub fn fzf_resolve_functions() -> String {
+    r#"
+# Resolve a working fzf binary (caches in _HINTSHELL_FZF_BIN).
+# Never exec WinGet/Links shims — they print "Permission denied" under Git Bash.
+_hintshell_try_fzf() {
+    local p="$1"
+    [[ -z "$p" ]] && return 1
+    # command -v on MSYS often omits .exe
+    if [[ ! -e "$p" && -e "${p}.exe" ]]; then
+        p="${p}.exe"
+    fi
+    # WinGet Links: resolve symlink only, never execute the shim path
+    case "$p" in
+        */WinGet/Links/*|*/Microsoft/WinGet/Links/*)
+            local real=""
+            if [[ -L "$p" ]]; then
+                real=$(readlink -f "$p" 2>/dev/null || readlink "$p" 2>/dev/null || true)
+            elif [[ -L "${p}.exe" ]]; then
+                real=$(readlink -f "${p}.exe" 2>/dev/null || readlink "${p}.exe" 2>/dev/null || true)
+            fi
+            [[ -n "$real" ]] || return 1
+            p="$real"
+            ;;
+    esac
+    if [[ -L "$p" ]]; then
+        local real2
+        real2=$(readlink -f "$p" 2>/dev/null || readlink "$p" 2>/dev/null || true)
+        if [[ -n "$real2" ]]; then
+            if [[ "$real2" != /* && "$real2" != [A-Za-z]:* ]]; then
+                real2="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$real2"
+            fi
+            if [[ -e "$real2" ]]; then
+                p="$real2"
+            elif [[ -e "${real2}.exe" ]]; then
+                p="${real2}.exe"
+            fi
+        fi
+    fi
+    # Still a Links path after resolve? refuse
+    case "$p" in
+        */WinGet/Links/*|*/Microsoft/WinGet/Links/*) return 1 ;;
+    esac
+    [[ -f "$p" ]] || return 1
+    if ! "$p" --version >/dev/null 2>&1; then
+        return 1
+    fi
+    _HINTSHELL_FZF_BIN="$p"
+    printf '%s\n' "$p"
+    return 0
+}
+
+_hintshell_resolve_fzf() {
+    if [[ -n "${_HINTSHELL_FZF_BIN:-}" ]]; then
+        printf '%s\n' "$_HINTSHELL_FZF_BIN"
+        return 0
+    fi
+    local p uname_s
+    if [[ -n "${HINTSHELL_FZF:-}" ]]; then
+        _hintshell_try_fzf "$HINTSHELL_FZF" && return 0
+    fi
+    # On Git Bash / MSYS: prefer real WinGet package binary FIRST
+    # (PATH often points at Links shim which is not executable)
+    uname_s=$(uname -s 2>/dev/null || true)
+    case "$uname_s" in
+        MINGW*|MSYS*|CYGWIN*)
+            for p in \
+                /c/Users/*/AppData/Local/Microsoft/WinGet/Packages/junegunn.fzf_*/fzf.exe \
+                /d/Users/*/AppData/Local/Microsoft/WinGet/Packages/junegunn.fzf_*/fzf.exe
+            do
+                [[ -f "$p" ]] || continue
+                _hintshell_try_fzf "$p" && return 0
+            done
+            ;;
+    esac
+    for p in fzf.exe fzf; do
+        if command -v "$p" >/dev/null 2>&1; then
+            _hintshell_try_fzf "$(command -v "$p" 2>/dev/null)" && return 0
+        fi
+    done
+    return 1
+}
+"#
+    .to_string()
+}
+
+/// fzf UI flags shared by bash/zsh pickers
+pub fn fzf_picker_args() -> &'static str {
+    "--height 40% --reverse --no-sort --cycle --delimiter='\\t' --with-nth=1,2 --nth=1 --tabstop=4 --prompt='HintShell> ' --header='Tab/Enter: select'"
 }
 
 pub enum Shell {
@@ -116,26 +247,34 @@ impl Shell {
         }
 
         let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
-        
-        // Use the marker to find the block
+
         let marker = "# HintShell Initialization";
+        let end_marker = "# End HintShell";
         if let Some(start_idx) = content.find(marker) {
-            // Usually the marker is on a line by itself, we want to find the start of that line
+            // Start of the line containing the marker
             let mut start_of_block = start_idx;
-            while start_of_block > 0 && content.as_bytes()[start_of_block-1] != b'\n' {
+            while start_of_block > 0 && content.as_bytes()[start_of_block - 1] != b'\n' {
                 start_of_block -= 1;
             }
 
-            // Find the end of the block (usually 2-4 lines after)
-            // For now, let's look for the next blank line or next significant newline sequence
-            let mut end_of_block = start_idx;
-            let mut lines_count = 0;
-            while end_of_block < content.len() && lines_count < 4 {
-                if content.as_bytes()[end_of_block] == b'\n' {
-                    lines_count += 1;
+            // Prefer explicit end marker; else fall back to ~12 lines (new init block is longer)
+            let end_of_block = if let Some(rel) = content[start_idx..].find(end_marker) {
+                let mut end = start_idx + rel + end_marker.len();
+                if end < content.len() && content.as_bytes()[end] == b'\n' {
+                    end += 1;
                 }
-                end_of_block += 1;
-            }
+                end
+            } else {
+                let mut end = start_idx;
+                let mut lines_count = 0;
+                while end < content.len() && lines_count < 12 {
+                    if content.as_bytes()[end] == b'\n' {
+                        lines_count += 1;
+                    }
+                    end += 1;
+                }
+                end
+            };
 
             let mut new_content = content;
             new_content.replace_range(start_of_block..end_of_block, "");

@@ -133,15 +133,10 @@ async fn main() {
                                 println!("{}", s.command);
                             }
                         } else if format == "fzf" {
-                            // FZF: command + frequency, tab-separated
+                            // FZF: full command + frequency (do not truncate command — accept must be exact)
                             for s in &suggestions {
-                                let cmd = &s.command;
-                                let display = if cmd.len() > 60 {
-                                    format!("{}…", &cmd[..59])
-                                } else {
-                                    cmd.clone()
-                                };
-                                println!("{:<60}\t({}x)", display, s.frequency);
+                                let cmd = s.command.replace('\t', " ").replace('\n', " ");
+                                println!("{}\t({}x)", cmd, s.frequency);
                             }
                         } else {
                             // Human readable

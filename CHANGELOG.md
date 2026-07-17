@@ -2,6 +2,26 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.2.0] - 2026-07-18
+
+### ✨ Improvements
+- **PowerShell overlay layout**: Compact mode on narrow terminals (≤3 items, short frequency labels, no emoji footer) to prevent line wrap and residual ghost text.
+- **Display-width aware rendering**: Truncate/pad suggestion rows by terminal display columns; clear uses window-relative available rows.
+- **Bash/Zsh fzf resolver**: Resolve a working `fzf` binary on Git Bash/MSYS — prefer real WinGet package path over non-executable `WinGet/Links` shims.
+- **Shell init hardening**: `.bashrc` / `.zshrc` install block uses POSIX paths and absolute `~/.hintshell/bin/hintshell[.exe]` so npm global never shadows hook generation.
+- **fzf accept accuracy**: Suggestion format no longer truncates the command string to 60 characters before Tab accept.
+
+### 🐛 Bug Fixes
+- **Multi-line buffer (PowerShell)**: Suppress suggestion overlay when the edit buffer contains newlines so the panel does not paint over `>>` continuation lines.
+- **Git Bash `Permission denied` on fzf**: Fixed Tab-to-suggest failing because MSYS cannot exec WinGet Links reparse-point shims.
+- **Hook not loading after `source ~/.bashrc`**: Fixed path/order issues that caused old npm `hintshell` to be used for `hook bash` instead of the installed binary.
+
+### 🔧 Internal
+- Shared `_hintshell_try_fzf` / `_hintshell_resolve_fzf` helpers for Bash and Zsh hooks.
+- Fallback when fzf is unavailable: accept top suggestion silently (no Permission denied noise).
+- Multi-line skip for Bash/Zsh Tab picker (same product decision as PowerShell).
+- Helper scripts: `scripts/test-overlay-layout.ps1`, `scripts/test-fzf-resolve-bash.sh`.
+
 ## [0.1.8] - 2026-07-02
 
 ### ✨ Bug Fixes

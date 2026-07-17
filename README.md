@@ -42,11 +42,12 @@ Most shells offer basic, single-line autocomplete. HintShell replaces that with 
 
 Follow these steps in order to get HintShell running on your machine.
 
-### 1. Install Dependencies (macOS / Linux only)
-HintShell uses `fzf` to render the suggestion picker on Unix systems.
+### 1. Install Dependencies (macOS / Linux / Git Bash)
+HintShell uses `fzf` to render the suggestion picker on Bash/Zsh (including **Git Bash** on Windows).
 - **macOS**: `brew install fzf`
 - **Linux (Ubuntu/Debian)**: `sudo apt install fzf`
-- **Windows**: No dependencies needed.
+- **Windows (Git Bash)**: `winget install junegunn.fzf` (or install fzf another way). PowerShell overlay does **not** require fzf.
+- **Windows PowerShell**: No extra dependencies for the real-time overlay.
 
 ### 2. Install HintShell
 Install via NPM to get the latest pre-built binaries for your platform:
@@ -83,13 +84,20 @@ source ~/.bashrc
 - **Tab** : Accept
 - **Esc** : Close
 
-### Zsh / Bash (macOS/Linux)
+### Zsh / Bash (macOS/Linux/Git Bash)
 **Tab-to-Suggest**: To avoid conflicts with `zsh-autosuggestions`, HintShell activates when you press **Tab**.
-- **Type `git ` + Tab** : Opens a fuzzy picker with frequencies and descriptions.
+- **Type `git ` + Tab** : Opens a fuzzy picker with frequencies.
 - **Enter** : Select and fill the command line.
+
+> **Git Bash note:** HintShell resolves `fzf` to a real executable (e.g. under WinGet Packages). If you previously saw `Permission denied` on `WinGet/Links/fzf`, reinstall/update to **0.2.0+**, run `hs init` (or reload `~/.bashrc`), and open a new terminal.
 
 ---
 
+## ✨ What's new in 0.2.0
+
+- PowerShell: multi-line paste no longer covers the buffer with the suggestion panel; narrow terminals use a compact layout.
+- Git Bash / Bash / Zsh: reliable fzf picker (WinGet Links shim fix) and init that prefers `~/.hintshell` over npm shims.
+- See [CHANGELOG.md](./CHANGELOG.md) for the full list.
 ## 🗑️ Uninstallation
 
 If you need to remove HintShell, it now comes with a clean uninstaller that handles everything for you:

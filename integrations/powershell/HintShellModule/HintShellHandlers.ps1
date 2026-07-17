@@ -17,6 +17,12 @@ function global:Invoke-HSAutoSuggest {
             return
         }
 
+        # Multi-line buffer (paste / open quote / >>): never paint over continuation lines
+        if (Test-HSMultilineBuffer -Typed $typed) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            return
+        }
+
         # Skip if input contains non-ASCII (Vietnamese IME, etc.)
         if ($typed -match '[^\x00-\x7F]') {
             if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
