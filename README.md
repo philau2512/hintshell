@@ -89,6 +89,20 @@ source ~/.bashrc
 - **Type `git ` + Tab** : Opens a fuzzy picker with frequencies.
 - **Enter** : Select and fill the command line.
 
+### Git Bash live overlay (Windows preview)
+Run Git Bash through the opt-in wrapper to render local HintShell suggestions while you type, without starting `fzf`:
+
+```bash
+hintshell bash
+```
+
+- **Tab** accepts a HintShell command suggestion only for command text. For paths such as `cd src/comp`, flags such as `git --ver`, or an empty overlay, it is forwarded to Bash completion.
+- **Up / Down** navigates the visible HintShell list; **Esc** closes it; **Enter** executes through Git Bash.
+- The wrapper preserves the existing `.bashrc` integration. Open Git Bash normally to use the legacy Tab/fzf flow.
+- Use `HINTSHELL_BASH` to set an explicit `bash.exe` path, or `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to refuse the wrapper in unsupported terminals.
+
+> **Preview limitation:** the live wrapper currently targets ANSI-capable Windows Terminal and mintty. Full-screen terminal applications should be opened from a normal Git Bash session until their passthrough behavior is included in a later release.
+
 > **Git Bash note:** HintShell resolves `fzf` to a real executable (e.g. under WinGet Packages). If you previously saw `Permission denied` on `WinGet/Links/fzf`, reinstall/update to **0.2.0+**, run `hs init` (or reload `~/.bashrc`), and open a new terminal.
 
 ---

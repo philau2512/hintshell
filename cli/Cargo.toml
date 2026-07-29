@@ -20,3 +20,7 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full", "net"] }
 dirs = "5.0"
 ureq = "2"
+crossterm = "0.29"
+
+[target."cfg(windows)".dependencies]
+conpty = "0.7.0"

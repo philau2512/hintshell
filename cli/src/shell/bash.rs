@@ -19,8 +19,9 @@ pub fn hook_script() -> String {
         "    [[ -x \"$HINTSHELL_CORE\" ]] && (\"$HINTSHELL_CORE\" >/dev/null 2>&1 &)\n".to_string(),
         "    sleep 0.2\n".to_string(),
         "}\n".to_string(),
-        // Tab: fzf picker (or first match if fzf unusable)
-        "\n_hintshell_tab() {\n".to_string(),
+        // Tab: fzf picker only outside the live PTY wrapper.
+        "\nif [[ -z \"${HINTSHELL_LIVE_BASH:-}\" ]]; then\n".to_string(),
+        "_hintshell_tab() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),
         "    local typed=\"$READLINE_LINE\"\n".to_string(),
         "    [[ -z \"$typed\" ]] && return\n".to_string(),
@@ -53,7 +54,7 @@ pub fn hook_script() -> String {
         "        READLINE_POINT=${#READLINE_LINE}\n".to_string(),
         "    fi\n".to_string(),
         "}\n".to_string(),
-        "bind -x '\"\\t\": _hintshell_tab'\n".to_string(),
+        "bind -x '\"\\t\": _hintshell_tab'\nfi\n".to_string(),
         // Record executed commands
         "\n_hintshell_preexec() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),

@@ -6,6 +6,7 @@ use hintshell_core::api::protocol::{HintShellRequest, HintShellResponse};
 use std::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod live_bash;
 mod shell;
 
 #[cfg(windows)]
@@ -69,6 +70,13 @@ enum Commands {
         /// Shell type (powershell, cmd, bash)
         #[arg(short, long)]
         shell: Option<String>,
+    },
+
+    /// Run Git Bash with HintShell's live advisory overlay
+    Bash {
+        /// Pass arguments directly to Git Bash
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     /// Initialize HintShell for all detected shells
@@ -214,6 +222,12 @@ async fn main() {
                     }
                 }
                 Err(e) => println!("❌ Cannot connect to daemon: {}", e),
+            }
+        }
+        Commands::Bash { args } => {
+            if let Err(error) = live_bash::run(args) {
+                eprintln!("HintShell Bash: {error}");
+                std::process::exit(1);
             }
         }
         Commands::Init => {
@@ -580,7 +594,7 @@ fn kill_orphan_daemons() -> usize {
 }
 
 #[cfg(windows)]
-async fn send_request(request: &HintShellRequest) -> Result<HintShellResponse, String> {
+pub(crate) async fn send_request(request: &HintShellRequest) -> Result<HintShellResponse, String> {
     let pipe = ClientOptions::new()
         .open(PIPE_NAME)
         .map_err(|e| format!("Cannot connect to HintShell daemon: {}", e))?;
@@ -589,7 +603,7 @@ async fn send_request(request: &HintShellRequest) -> Result<HintShellResponse, S
 }
 
 #[cfg(unix)]
-async fn send_request(request: &HintShellRequest) -> Result<HintShellResponse, String> {
+pub(crate) async fn send_request(request: &HintShellRequest) -> Result<HintShellResponse, String> {
     let stream = UnixStream::connect(SOCKET_PATH)
         .await
         .map_err(|e| format!("Cannot connect to HintShell socket: {}", e))?;
