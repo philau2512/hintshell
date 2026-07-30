@@ -2,6 +2,11 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.6] - 2026-03-14
+
+### Bug Fixes
+- **Windows release build**: Compile Unix raw-TTY passthrough only on Unix targets and ignore Unix-only prompt markers in the Git Bash event loop, restoring Windows CI builds.
+
 ## [0.3.5] - 2026-03-14
 
 ### Bug Fixes

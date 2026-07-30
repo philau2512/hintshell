@@ -207,6 +207,7 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
             clear_overlay(&mut state, &output)?;
             match shell_event {
                 ShellEvent::Output(bytes) => write_terminal(&output, &bytes)?,
+                ShellEvent::PromptReady => {}
                 ShellEvent::Closed => running = false,
             }
         }
@@ -889,6 +890,7 @@ fn forward_and_invalidate(
     write_to_shell(writer, bytes)
 }
 
+#[cfg(unix)]
 fn forward_stdin_to_shell(writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> Result<(), String> {
     use std::os::fd::AsRawFd;
 
