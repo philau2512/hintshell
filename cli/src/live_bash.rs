@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+
 use std::env;
 use std::io::{self, Read, Write};
 use std::process::Command;
@@ -70,6 +72,7 @@ impl Drop for RawModeGuard {
     }
 }
 
+#[cfg(windows)]
 pub fn run(args: Vec<String>) -> Result<(), String> {
     if !supports_live_overlay() {
         return Err(
@@ -94,7 +97,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         command.args(args.iter().map(quote_windows_argument));
     }
 
-    #[cfg(windows)]
     let mut process = {
         let mut options = ProcessOptions::default();
         options.set_console_size(Some((cols as i16, rows as i16)));
@@ -103,10 +105,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             .map_err(|error| format!("cannot start Git Bash: {error}"))?
     };
 
-    #[cfg(not(windows))]
-    return Err("live Bash overlay currently requires Windows ConPTY".to_string());
-
-    #[cfg(windows)]
     let writer = Arc::new(Mutex::new(Box::new(
         process
             .input()
@@ -114,7 +112,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     ) as Box<dyn Write + Send>));
     let output = Arc::new(Mutex::new(io::stdout()));
     let (shell_events_tx, shell_events_rx) = mpsc::channel::<ShellEvent>();
-    #[cfg(windows)]
     let output_reader = process
         .output()
         .map_err(|error| format!("cannot open Git Bash output: {error}"))?;
@@ -156,7 +153,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             match event::read().map_err(|error| error.to_string())? {
                 Event::Resize(columns, rows) => {
                     clear_overlay(&mut state, &output)?;
-                    #[cfg(windows)]
                     process
                         .resize(columns as i16, rows as i16)
                         .map_err(|error| format!("cannot resize Git Bash terminal: {error}"))?;
@@ -169,7 +165,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
 
-        #[cfg(windows)]
         if !process.is_alive() {
             clear_overlay(&mut state, &output)?;
             running = false;
@@ -177,9 +172,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
 
     clear_overlay(&mut state, &output)?;
-    #[cfg(windows)]
     let _ = process.exit(1);
     Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn run(_args: Vec<String>) -> Result<(), String> {
+    Err("live Bash overlay currently requires Windows ConPTY".to_string())
 }
 
 #[cfg(windows)]

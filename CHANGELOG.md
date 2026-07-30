@@ -2,6 +2,12 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.1] - 2026-03-14
+
+### 🐛 Bug Fixes
+- **Cross-platform release builds**: Compile the Git Bash live overlay only on Windows, with a clear unsupported-platform response elsewhere. This restores Linux and macOS release builds.
+- **Unix warning cleanup**: Gate Windows-only tracing imports and preserve the daemon lock-file contents when opening it on Unix.
+
 ## [0.3.0] - 2026-03-14
 
 ### ✨ New Features

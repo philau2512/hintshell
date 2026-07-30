@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use tracing::{error, info, warn};
+#[cfg(windows)]
+use tracing::warn;
+use tracing::{error, info};
 
 use hintshell_core::api::server::HintShellServer;
 
@@ -90,6 +92,7 @@ fn try_claim_single_instance() -> Option<InstanceGuard> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(false)
         .mode(0o644)
         .open(path)
         .ok()?;

@@ -5,7 +5,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn};
+#[cfg(windows)]
+use tracing::warn;
+use tracing::{debug, error, info};
 
 use crate::api::protocol::*;
 use crate::engine::matcher::SuggestionEngine;
