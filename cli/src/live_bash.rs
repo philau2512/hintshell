@@ -838,6 +838,8 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
 
     let (terminal_width, terminal_height) = size().unwrap_or((100, 30));
     let width = usize::from(terminal_width).clamp(44, 78);
+    let inner_width = overlay_inner_width(width);
+    let command_width = overlay_command_width(width);
     let total = state.suggestions.len();
     let (_, cursor_row) = position().unwrap_or((0, 0));
     let shown = visible_suggestion_rows(cursor_row, terminal_height, total);
@@ -852,7 +854,7 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let counter = format!(" {}/{} ", selected + 1, total);
     frame.push_str(&format!(
         "\r\x1b[38;5;141m╭{}{}╮\x1b[0m\n",
-        "─".repeat(width.saturating_sub(counter.len() + 2)),
+        "─".repeat(inner_width.saturating_sub(counter.len())),
         counter
     ));
 
@@ -862,12 +864,11 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     {
         let suggestion_index = viewport_start + index;
         let selected_row = suggestion_index == selected;
-        let command = fit_width(&suggestion.command, width.saturating_sub(30));
+        let command = fit_width(&suggestion.command, command_width);
         let source = fit_width(&suggestion.source, 20);
         let marker = if selected_row { "▶" } else { " " };
         let row = format!(
-            " {marker} {command:<cmd_width$}  {source:<20} ",
-            cmd_width = width.saturating_sub(30)
+            " {marker} {command:<command_width$}  {source:<20} ",
         );
         if selected_row {
             frame.push_str(&format!(
@@ -885,14 +886,14 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .get(selected)
         .and_then(|suggestion| suggestion.description.as_deref())
         .unwrap_or("history suggestion");
-    let description = fit_width(description, width.saturating_sub(4));
+    let description = fit_width(description, inner_width.saturating_sub(2));
     frame.push_str(&format!(
         "\r\x1b[38;5;141m│\x1b[38;5;244m  {description:<desc_width$}\x1b[38;5;141m│\x1b[0m\n",
-        desc_width = width.saturating_sub(4)
+        desc_width = inner_width.saturating_sub(2)
     ));
     frame.push_str(&format!(
         "\r\x1b[38;5;141m╰{}╯\x1b[0m\x1b8",
-        "─".repeat(width)
+        "─".repeat(inner_width)
     ));
 
     let mut stdout = output
@@ -904,6 +905,14 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .map_err(|error| format!("cannot render HintShell overlay: {error}"))?;
     state.rendered_lines = rendered_lines;
     Ok(())
+}
+
+fn overlay_inner_width(width: usize) -> usize {
+    width.saturating_sub(2)
+}
+
+fn overlay_command_width(width: usize) -> usize {
+    overlay_inner_width(width).saturating_sub(26)
 }
 
 fn visible_suggestion_rows(cursor_row: u16, terminal_height: u16, total: usize) -> usize {
@@ -1087,6 +1096,19 @@ mod tests {
             suggestions: vec![suggestion("git commit")],
         };
         assert!(result.generation != state.generation || result.buffer != state.buffer);
+    }
+
+    #[test]
+    fn overlay_frame_uses_one_consistent_inner_width() {
+        let width = 44;
+        let inner_width = overlay_inner_width(width);
+        let command_width = overlay_command_width(width);
+        let row = format!(" ▶ {:<command_width$}  {:<20} ", "git status", "history");
+        let description = format!("  {:<desc_width$}", "history suggestion", desc_width = inner_width - 2);
+
+        assert_eq!(inner_width, 42);
+        assert_eq!(row.chars().count(), inner_width);
+        assert_eq!(description.chars().count(), inner_width);
     }
 
     #[test]
