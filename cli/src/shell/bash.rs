@@ -63,6 +63,9 @@ pub fn hook_script() -> String {
         "}\n".to_string(),
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
             .to_string(),
+        "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" ]]; then\n".to_string(),
+        "_hintshell_emit_cwd() { printf '\\036HINTSHELL_CWD:%s\\037' \"$PWD\"; }\n".to_string(),
+        "PROMPT_COMMAND=\"_hintshell_emit_cwd;$PROMPT_COMMAND\"\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
         "_hintshell_ensure_daemon\n".to_string(),
     ]
@@ -83,9 +86,9 @@ if [ -x "{cli}" ]; then
   _hs_hook="$("{cli}" hook bash 2>/dev/null)" && [ -n "$_hs_hook" ] && eval "$_hs_hook"
   unset _hs_hook
 fi
-# Start the live overlay only for a normal interactive Git Bash or WSL2 session.
+# Start the live overlay for Git Bash/WSL2, or macOS only when explicitly enabled.
 # Set HINTSHELL_DISABLE_AUTO_BASH=1 to bypass it for one session.
-if [[ ( -n "${{MSYSTEM:-}}" || -n "${{WSL_INTEROP:-}}" || -n "${{WSL_DISTRO_NAME:-}}" ) && $- == *i* && -t 0 && -t 1 && -z "${{BASH_EXECUTION_STRING:-}}" && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
+if [[ ( -n "${{MSYSTEM:-}}" || -n "${{WSL_INTEROP:-}}" || -n "${{WSL_DISTRO_NAME:-}}" || ( "$(uname -s 2>/dev/null)" == "Darwin" && -n "${{HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY:-}}" ) ) && $- == *i* && -t 0 && -t 1 && -z "${{BASH_EXECUTION_STRING:-}}" && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
   exec "{cli}" bash
 fi
 # End HintShell
@@ -103,6 +106,8 @@ mod tests {
     fn install_line_autostarts_live_wrapper_with_escape_hatch() {
         let line = install_line();
         assert!(line.contains("HINTSHELL_DISABLE_AUTO_BASH"));
+        assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY"));
+        assert!(line.contains("Darwin"));
         assert!(line.contains("BASH_EXECUTION_STRING"));
         assert!(line.contains("HINTSHELL_LIVE_BASH"));
         assert!(line.contains("MSYSTEM"));

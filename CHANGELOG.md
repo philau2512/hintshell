@@ -2,6 +2,19 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [Unreleased]
+
+### New Features
+- **macOS Bash/Zsh live overlay (opt-in)**: Set `HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1` before `hs init` to start the Unix PTY-backed realtime overlay for interactive macOS Bash or Zsh. The default macOS behavior remains the existing native Tab/fzf picker.
+
+### Improvements
+- **Live shell CWD synchronization**: Unix live children preserve their opening directory and emit an internal prompt marker after directory changes, keeping contextual suggestions aligned with `cd` without changing the daemon protocol.
+- **Shell-specific requests**: The shared live runtime now identifies Bash and Zsh independently in suggestion requests while keeping Git Bash on ConPTY and WSL2 Bash on its existing Unix PTY policy.
+
+### Compatibility
+- **Explicit rollout boundary**: macOS Zsh never auto-starts outside opt-in mode; Linux Zsh remains on its Tab/fzf integration. `HINTSHELL_DISABLE_AUTO_BASH=1` and `HINTSHELL_DISABLE_AUTO_ZSH=1` bypass their wrappers for a single session.
+- **Native completion authority**: The live overlay continues to defer path and flag completion to Bash/Zsh.
+
 ## [0.3.2] - 2026-03-14
 
 ### New Features

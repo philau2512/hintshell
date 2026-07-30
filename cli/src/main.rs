@@ -9,6 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 mod live_bash;
 mod shell;
 
+use live_bash::LiveShell;
+
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ClientOptions;
 
@@ -80,9 +82,16 @@ enum Commands {
         shell: Option<String>,
     },
 
-    /// Run Git Bash with HintShell's live advisory overlay
+    /// Run Bash with HintShell's live advisory overlay
     Bash {
-        /// Pass arguments directly to Git Bash
+        /// Pass arguments directly to Bash
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Run Zsh with HintShell's live advisory overlay on macOS
+    Zsh {
+        /// Pass arguments directly to Zsh
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -244,12 +253,8 @@ async fn main() {
                 Err(e) => println!("❌ Cannot connect to daemon: {}", e),
             }
         }
-        Commands::Bash { args } => {
-            if let Err(error) = live_bash::run(args) {
-                eprintln!("HintShell Bash: {error}");
-                std::process::exit(1);
-            }
-        }
+        Commands::Bash { args } => run_live_shell(LiveShell::Bash, args),
+        Commands::Zsh { args } => run_live_shell(LiveShell::Zsh, args),
         Commands::Init => {
             println!("▶ hintshell init");
             // Stop + force-kill so Windows can overwrite ~/.hintshell/*.exe (os error 32)
@@ -390,6 +395,13 @@ async fn main() {
                 }
             }
         }
+    }
+}
+
+fn run_live_shell(shell: LiveShell, args: Vec<String>) {
+    if let Err(error) = live_bash::run(shell, args) {
+        eprintln!("HintShell {}: {error}", shell.display_name());
+        std::process::exit(1);
     }
 }
 

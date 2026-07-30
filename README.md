@@ -98,10 +98,27 @@ HINTSHELL_DISABLE_AUTO_BASH=1 bash
 ```
 
 - Git Bash keeps its existing Windows ConPTY backend. WSL2 uses a separate Unix pseudo-terminal backend and preserves the terminal's current working directory; neither changes PowerShell integration.
-- Native Linux and macOS Bash retain the existing `Tab`/`fzf` picker instead of starting the live wrapper.
+- Native Linux Bash retains the existing `Tab`/`fzf` picker instead of starting the live wrapper.
 - Set `HINTSHELL_BASH` to an explicit `bash.exe` path on Git Bash. Set `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to reject the wrapper in unsupported terminals.
 
 > **Preview limitation:** the live wrapper requires an ANSI-capable terminal. For full-screen terminal applications, bypass the wrapper and open them from a normal Bash session.
+
+### macOS Bash / Zsh live overlay (opt-in)
+
+macOS retains its native `Tab`/`fzf` integration by default. To opt into the live overlay for interactive Bash or Zsh sessions, add this before running `hs init`, then open a new terminal:
+
+```bash
+export HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1
+hs init
+```
+
+The wrapper starts the same shell as a child through the Unix pseudo-terminal backend. It preserves the opening directory and synchronizes the current directory after each prompt, so contextual suggestions follow `cd` changes.
+
+- **Tab** keeps native Bash/Zsh path and flag completion authoritative; HintShell accepts only compatible command-prefix suggestions.
+- **Bash escape hatch:** `HINTSHELL_DISABLE_AUTO_BASH=1 bash`
+- **Zsh escape hatch:** `HINTSHELL_DISABLE_AUTO_ZSH=1 zsh`
+- To roll back to the default picker, remove or unset `HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY`, run `hs init`, and start a new terminal.
+- Use an escape hatch for full-screen terminal applications or any profile whose startup plugins are not compatible with a PTY wrapper.
 
 ### Zsh / Bash (macOS/Linux)
 

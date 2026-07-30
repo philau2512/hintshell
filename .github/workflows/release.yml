@@ -56,6 +56,9 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+      - name: Run CLI tests
+        run: cargo test -p hintshell
+
       - name: Prepare release artifacts (Unix)
         if: runner.os != 'Windows'
         run: |

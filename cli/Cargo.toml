@@ -1,6 +1,6 @@
 [package]
 name = "hintshell"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "HintShell CLI - Control your Personal Command Intelligence Engine"
 

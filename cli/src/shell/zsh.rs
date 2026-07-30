@@ -17,8 +17,9 @@ pub fn hook_script() -> String {
         "    [[ -x \"$HINTSHELL_CORE\" ]] && (\"$HINTSHELL_CORE\" >/dev/null 2>&1 &)\n".to_string(),
         "    sleep 0.2\n".to_string(),
         "}\n".to_string(),
-        // Tab: ZLE widget with fzf picker
-        "\n_hintshell_tab() {\n".to_string(),
+        // Tab: ZLE widget with fzf picker outside the live PTY wrapper.
+        "\nif [[ -z \"${HINTSHELL_LIVE_ZSH:-}\" ]]; then\n".to_string(),
+        "_hintshell_tab() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),
         "    local typed=\"$LBUFFER\"\n".to_string(),
         "    [[ -z \"$typed\" ]] && { zle expand-or-complete; return }\n".to_string(),
@@ -50,7 +51,7 @@ pub fn hook_script() -> String {
         "    zle reset-prompt\n".to_string(),
         "}\n".to_string(),
         "zle -N _hintshell_tab\n".to_string(),
-        "bindkey '^I' _hintshell_tab\n".to_string(),
+        "bindkey '^I' _hintshell_tab\nfi\n".to_string(),
         // Record commands to history
         "\n_hintshell_precmd() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),
@@ -59,6 +60,9 @@ pub fn hook_script() -> String {
             .to_string(),
         "}\n".to_string(),
         "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),
+        "if [[ -n \"${HINTSHELL_LIVE_ZSH:-}\" ]]; then\n".to_string(),
+        "    _hintshell_emit_cwd() { printf '\\036HINTSHELL_CWD:%s\\037' \"$PWD\"; }\n".to_string(),
+        "    precmd_functions=(${precmd_functions:#_hintshell_emit_cwd} _hintshell_emit_cwd)\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
         "_hintshell_ensure_daemon\n".to_string(),
     ]
@@ -77,9 +81,37 @@ if [ -x "{cli}" ]; then
   _hs_hook="$("{cli}" hook zsh 2>/dev/null)" && [ -n "$_hs_hook" ] && eval "$_hs_hook"
   unset _hs_hook
 fi
+# Start the live overlay on macOS only when explicitly enabled.
+# Set HINTSHELL_DISABLE_AUTO_ZSH=1 to bypass it for one session.
+if [[ "$(uname -s 2>/dev/null)" == "Darwin" && -n "${{HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY:-}}" && -o interactive && -t 0 && -t 1 && -z "${{HINTSHELL_LIVE_ZSH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_ZSH:-}}" ]]; then
+  exec "{cli}" zsh
+fi
 # End HintShell
 "#,
         bin_dir = bin_dir,
         cli = cli
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_line_keeps_zsh_live_overlay_opt_in() {
+        let line = install_line();
+        assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY"));
+        assert!(line.contains("HINTSHELL_DISABLE_AUTO_ZSH"));
+        assert!(line.contains("HINTSHELL_LIVE_ZSH"));
+        assert!(line.contains("Darwin"));
+        assert!(line.contains("-o interactive"));
+        assert!(line.contains("\" zsh"));
+    }
+
+    #[test]
+    fn hook_skips_fzf_widget_inside_live_zsh() {
+        let hook = hook_script();
+        assert!(hook.contains("HINTSHELL_LIVE_ZSH"));
+        assert!(hook.contains("_hintshell_emit_cwd"));
+    }
 }

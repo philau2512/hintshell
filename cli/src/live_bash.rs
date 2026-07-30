@@ -21,6 +21,35 @@ const QUERY_TIMEOUT: Duration = Duration::from_millis(180);
 const MAX_VISIBLE_SUGGESTIONS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveShell {
+    Bash,
+    Zsh,
+}
+
+impl LiveShell {
+    fn request_shell(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Bash => "HINTSHELL_LIVE_BASH",
+            Self::Zsh => "HINTSHELL_LIVE_ZSH",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Bash => "Bash",
+            Self::Zsh => "Zsh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabAction {
     AcceptHintShell,
     ForwardToBash,
@@ -74,7 +103,10 @@ impl Drop for RawModeGuard {
 }
 
 #[cfg(windows)]
-pub fn run(args: Vec<String>) -> Result<(), String> {
+pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
+    if shell != LiveShell::Bash {
+        return Err("live Zsh overlay is available only on macOS".to_string());
+    }
     if !supports_live_overlay() {
         return Err(
             "live overlay requires an ANSI-capable terminal; open Git Bash normally to use the legacy Tab/fzf integration"
@@ -90,7 +122,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // `conpty` builds the child environment from explicit entries only.
     // Preserve the Git Bash session environment before setting the wrapper marker.
     command.envs(env::vars_os());
-    command.env("HINTSHELL_LIVE_BASH", "1");
+    command.env(shell.marker(), "1");
     let interactive = args.is_empty() || args.iter().any(|argument| argument == "-i");
     if args.is_empty() {
         command.args(["--login", "-i"]);
@@ -116,7 +148,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let output_reader = process
         .output()
         .map_err(|error| format!("cannot open Git Bash output: {error}"))?;
-    start_output_pump(Box::new(output_reader), shell_events_tx);
+    start_output_pump(Box::new(output_reader), shell_events_tx, None);
 
     if !interactive {
         return run_batch_process(process, shell_events_rx, &output);
@@ -124,10 +156,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let (query_tx, query_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
-    let cwd = env::current_dir()
-        .ok()
-        .map(|path| path.to_string_lossy().to_string());
-    start_query_worker(query_rx, result_tx, cwd);
+    let query_cwd = Arc::new(Mutex::new(
+        env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string()),
+    ));
+    start_query_worker(query_rx, result_tx, query_cwd, shell.request_shell());
 
     let _raw_mode = RawModeGuard::enter()?;
     let mut state = OverlayState::new();
@@ -178,9 +212,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-pub fn run(args: Vec<String>) -> Result<(), String> {
-    if !is_wsl_runtime() {
-        return Err("live Bash overlay is currently available only in WSL2; native Unix keeps the Tab/fzf integration".to_string());
+pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
+    if !supports_unix_live_shell(shell) {
+        return Err(format!(
+            "live {} overlay is unavailable here; WSL2 Bash is enabled by default and macOS requires HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1",
+            shell.display_name()
+        ));
     }
     if !supports_live_overlay() {
         return Err("live overlay requires an ANSI-capable terminal".to_string());
@@ -196,18 +233,23 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|error| format!("cannot create WSL pseudo-terminal: {error}"))?;
+        .map_err(|error| format!("cannot create Unix pseudo-terminal: {error}"))?;
 
     let cwd = env::current_dir()
-        .map_err(|error| format!("cannot determine WSL working directory: {error}"))?;
-    let mut command = CommandBuilder::new(resolve_bash()?);
+        .map_err(|error| format!("cannot determine terminal working directory: {error}"))?;
+    let mut command = CommandBuilder::new(resolve_shell(shell)?);
     // portable-pty does not reliably inherit CWD for an interactive child.
-    // Preserve the terminal directory selected by the WSL host.
+    // Preserve the terminal directory selected by the host terminal.
     command.cwd(cwd);
-    command.env("HINTSHELL_LIVE_BASH", "1");
-    command.env("HINTSHELL_LIVE_BASH_WSL", "1");
+    command.env(shell.marker(), "1");
+    if shell == LiveShell::Bash && is_wsl_runtime() {
+        command.env("HINTSHELL_LIVE_BASH_WSL", "1");
+    }
     if args.is_empty() {
-        command.args(["--login", "-i"]);
+        match shell {
+            LiveShell::Bash => command.args(["--login", "-i"]),
+            LiveShell::Zsh => command.arg("-i"),
+        }
     } else {
         command.args(args.iter());
     }
@@ -215,20 +257,24 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut process = pair
         .slave
         .spawn_command(command)
-        .map_err(|error| format!("cannot start WSL Bash: {error}"))?;
+        .map_err(|error| format!("cannot start {}: {error}", shell.display_name()))?;
     drop(pair.slave);
 
-    let writer =
-        Arc::new(Mutex::new(pair.master.take_writer().map_err(|error| {
-            format!("cannot open WSL Bash input: {error}")
-        })?));
+    let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(|error| {
+        format!("cannot open {} input: {error}", shell.display_name())
+    })?));
     let output = Arc::new(Mutex::new(io::stdout()));
     let (shell_events_tx, shell_events_rx) = mpsc::channel::<ShellEvent>();
+    let query_cwd = Arc::new(Mutex::new(
+        env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string()),
+    ));
     let output_reader = pair
         .master
         .try_clone_reader()
-        .map_err(|error| format!("cannot open WSL Bash output: {error}"))?;
-    start_output_pump(output_reader, shell_events_tx);
+        .map_err(|error| format!("cannot open {} output: {error}", shell.display_name()))?;
+    start_output_pump(output_reader, shell_events_tx, Some(Arc::clone(&query_cwd)));
 
     if !interactive {
         return run_unix_batch_process(&mut *process, shell_events_rx, &output);
@@ -236,10 +282,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let (query_tx, query_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
-    let cwd = env::current_dir()
-        .ok()
-        .map(|path| path.to_string_lossy().to_string());
-    start_query_worker(query_rx, result_tx, cwd);
+    start_query_worker(query_rx, result_tx, query_cwd, shell.request_shell());
 
     let _raw_mode = RawModeGuard::enter()?;
     let mut state = OverlayState::new();
@@ -273,7 +316,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                             pixel_width: 0,
                             pixel_height: 0,
                         })
-                        .map_err(|error| format!("cannot resize WSL terminal: {error}"))?;
+                        .map_err(|error| {
+                            format!("cannot resize {} terminal: {error}", shell.display_name())
+                        })?;
                     render_overlay(&mut state, &output)?;
                 }
                 Event::Key(key) if accepts_key_event(&key) => {
@@ -311,7 +356,7 @@ fn run_unix_batch_process(
             Err(mpsc::RecvTimeoutError::Timeout)
                 if process
                     .try_wait()
-                    .map_err(|error| format!("cannot check WSL Bash: {error}"))?
+                    .map_err(|error| format!("cannot check Unix shell: {error}"))?
                     .is_some() =>
             {
                 while let Ok(ShellEvent::Output(bytes)) = events.try_recv() {
@@ -325,8 +370,21 @@ fn run_unix_batch_process(
 }
 
 #[cfg(not(any(windows, unix)))]
-pub fn run(_args: Vec<String>) -> Result<(), String> {
-    Err("live Bash overlay is unsupported on this platform".to_string())
+pub fn run(_shell: LiveShell, _args: Vec<String>) -> Result<(), String> {
+    Err("live shell overlay is unsupported on this platform".to_string())
+}
+
+#[cfg(unix)]
+fn supports_unix_live_shell(shell: LiveShell) -> bool {
+    match shell {
+        LiveShell::Bash => is_wsl_runtime() || is_macos_live_overlay_enabled(),
+        LiveShell::Zsh => is_macos_live_overlay_enabled(),
+    }
+}
+
+#[cfg(unix)]
+fn is_macos_live_overlay_enabled() -> bool {
+    cfg!(target_os = "macos") && env::var_os("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY").is_some()
 }
 
 #[cfg(unix)]
@@ -386,6 +444,14 @@ fn quote_windows_argument(value: impl AsRef<str>) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
+#[cfg(unix)]
+fn resolve_shell(shell: LiveShell) -> Result<String, String> {
+    match shell {
+        LiveShell::Bash => resolve_bash(),
+        LiveShell::Zsh => Ok(env::var("HINTSHELL_ZSH").unwrap_or_else(|_| "zsh".to_string())),
+    }
+}
+
 fn resolve_bash() -> Result<String, String> {
     if let Ok(path) = env::var("HINTSHELL_BASH") {
         return Ok(path);
@@ -411,30 +477,98 @@ fn resolve_bash() -> Result<String, String> {
     }
 }
 
-fn start_output_pump(mut reader: Box<dyn Read + Send>, events: mpsc::Sender<ShellEvent>) {
+#[derive(Debug)]
+enum ShellEvent {
+    Output(Vec<u8>),
+    Closed,
+}
+
+#[cfg(unix)]
+const CWD_MARKER_START: &[u8] = b"\x1eHINTSHELL_CWD:";
+#[cfg(unix)]
+const CWD_MARKER_END: u8 = b'\x1f';
+
+fn start_output_pump(
+    mut reader: Box<dyn Read + Send>,
+    events: mpsc::Sender<ShellEvent>,
+    cwd: Option<Arc<Mutex<Option<String>>>>,
+) {
+    #[cfg(not(unix))]
+    let _ = &cwd;
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
+        #[cfg(unix)]
+        let mut marker_buffer = Vec::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    if events
-                        .send(ShellEvent::Output(buffer[..read].to_vec()))
-                        .is_err()
-                    {
+                    #[cfg(unix)]
+                    let bytes =
+                        filter_cwd_markers(&buffer[..read], &mut marker_buffer, cwd.as_ref());
+                    #[cfg(not(unix))]
+                    let bytes = buffer[..read].to_vec();
+                    if !bytes.is_empty() && events.send(ShellEvent::Output(bytes)).is_err() {
                         return;
                     }
                 }
             }
         }
+        #[cfg(unix)]
+        if !marker_buffer.is_empty() {
+            let _ = events.send(ShellEvent::Output(marker_buffer));
+        }
         let _ = events.send(ShellEvent::Closed);
     });
 }
 
-#[derive(Debug)]
-enum ShellEvent {
-    Output(Vec<u8>),
-    Closed,
+#[cfg(unix)]
+fn filter_cwd_markers(
+    bytes: &[u8],
+    pending: &mut Vec<u8>,
+    cwd: Option<&Arc<Mutex<Option<String>>>>,
+) -> Vec<u8> {
+    pending.extend_from_slice(bytes);
+    let mut output = Vec::new();
+
+    loop {
+        let Some(start) = pending
+            .windows(CWD_MARKER_START.len())
+            .position(|window| window == CWD_MARKER_START)
+        else {
+            let max_prefix = pending.len().min(CWD_MARKER_START.len().saturating_sub(1));
+            let keep = (1..=max_prefix)
+                .rev()
+                .find(|length| pending[pending.len() - length..] == CWD_MARKER_START[..*length])
+                .unwrap_or(0);
+            let flush = pending.len().saturating_sub(keep);
+            output.extend_from_slice(&pending[..flush]);
+            pending.drain(..flush);
+            break;
+        };
+
+        output.extend_from_slice(&pending[..start]);
+        if let Some(end) = pending[start + CWD_MARKER_START.len()..]
+            .iter()
+            .position(|byte| *byte == CWD_MARKER_END)
+        {
+            let path_start = start + CWD_MARKER_START.len();
+            let path_end = path_start + end;
+            if let Ok(path) = std::str::from_utf8(&pending[path_start..path_end]) {
+                if let Some(cwd) = cwd {
+                    if let Ok(mut current) = cwd.lock() {
+                        *current = Some(path.to_string());
+                    }
+                }
+            }
+            pending.drain(..=path_end);
+        } else {
+            pending.drain(..start);
+            break;
+        }
+    }
+
+    output
 }
 
 fn write_terminal(output: &Arc<Mutex<io::Stdout>>, bytes: &[u8]) -> Result<(), String> {
@@ -454,19 +588,20 @@ struct SuggestionResult {
     suggestions: Vec<SuggestionItem>,
 }
 
-fn query_request(input: String, cwd: Option<String>) -> HintShellRequest {
+fn query_request(input: String, cwd: Option<String>, shell: &str) -> HintShellRequest {
     HintShellRequest::Suggest {
         input,
         limit: 12,
         cwd,
-        shell: Some("bash".to_string()),
+        shell: Some(shell.to_string()),
     }
 }
 
 fn start_query_worker(
     receiver: mpsc::Receiver<(u64, String)>,
     sender: mpsc::Sender<SuggestionResult>,
-    cwd: Option<String>,
+    cwd: Arc<Mutex<Option<String>>>,
+    shell: &'static str,
 ) {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
@@ -481,7 +616,8 @@ fn start_query_worker(
                 buffer = next_buffer;
             }
 
-            let request = query_request(buffer.clone(), cwd.clone());
+            let cwd = cwd.lock().ok().and_then(|current| current.clone());
+            let request = query_request(buffer.clone(), cwd, shell);
             let suggestions = runtime
                 .block_on(async {
                     tokio::time::timeout(QUERY_TIMEOUT, crate::send_request(&request))
@@ -829,10 +965,11 @@ mod tests {
     }
 
     #[test]
-    fn live_query_includes_wrapper_cwd() {
+    fn live_query_includes_wrapper_cwd_and_shell() {
         let request = query_request(
             "cd ".to_string(),
             Some(r"D:\Admin\Documents\PROJECTS\HintShell".to_string()),
+            "bash",
         );
         assert!(matches!(
             request,
@@ -842,6 +979,41 @@ mod tests {
                 ..
             } if cwd == r"D:\Admin\Documents\PROJECTS\HintShell" && shell == "bash"
         ));
+    }
+
+    #[test]
+    fn live_query_identifies_zsh() {
+        let request = query_request("git ".to_string(), None, "zsh");
+        assert!(matches!(
+            request,
+            HintShellRequest::Suggest { shell: Some(shell), .. } if shell == "zsh"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cwd_marker_updates_query_directory_without_rendering() {
+        let cwd = Arc::new(Mutex::new(None));
+        let mut pending = Vec::new();
+        let bytes = filter_cwd_markers(
+            b"prompt\x1eHINTSHELL_CWD:/tmp/workspace\x1fnext",
+            &mut pending,
+            Some(&cwd),
+        );
+        assert_eq!(bytes, b"promptnext");
+        assert_eq!(*cwd.lock().unwrap(), Some("/tmp/workspace".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cwd_marker_can_span_output_reads() {
+        let cwd = Arc::new(Mutex::new(None));
+        let mut pending = Vec::new();
+        let first = filter_cwd_markers(b"\x1eHINTSHELL_CWD:/tmp/", &mut pending, Some(&cwd));
+        let second = filter_cwd_markers(b"project\x1f", &mut pending, Some(&cwd));
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert_eq!(*cwd.lock().unwrap(), Some("/tmp/project".to_string()));
     }
 
     #[test]
