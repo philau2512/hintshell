@@ -1,7 +1,6 @@
-#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
-
 use std::env;
 use std::io::{self, Read, Write};
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -14,6 +13,8 @@ use hintshell_core::api::protocol::{HintShellRequest, SuggestionItem};
 
 #[cfg(windows)]
 use conpty::ProcessOptions;
+#[cfg(unix)]
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const QUERY_DEBOUNCE: Duration = Duration::from_millis(40);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(180);
@@ -176,9 +177,169 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    if !is_wsl_runtime() {
+        return Err("live Bash overlay is currently available only in WSL2; native Unix keeps the Tab/fzf integration".to_string());
+    }
+    if !supports_live_overlay() {
+        return Err("live overlay requires an ANSI-capable terminal".to_string());
+    }
+
+    let (cols, rows) = size().unwrap_or((120, 30));
+    let interactive = args.is_empty() || args.iter().any(|argument| argument == "-i");
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("cannot create WSL pseudo-terminal: {error}"))?;
+
+    let cwd = env::current_dir()
+        .map_err(|error| format!("cannot determine WSL working directory: {error}"))?;
+    let mut command = CommandBuilder::new(resolve_bash()?);
+    // portable-pty does not reliably inherit CWD for an interactive child.
+    // Preserve the terminal directory selected by the WSL host.
+    command.cwd(cwd);
+    command.env("HINTSHELL_LIVE_BASH", "1");
+    command.env("HINTSHELL_LIVE_BASH_WSL", "1");
+    if args.is_empty() {
+        command.args(["--login", "-i"]);
+    } else {
+        command.args(args.iter());
+    }
+
+    let mut process = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("cannot start WSL Bash: {error}"))?;
+    drop(pair.slave);
+
+    let writer =
+        Arc::new(Mutex::new(pair.master.take_writer().map_err(|error| {
+            format!("cannot open WSL Bash input: {error}")
+        })?));
+    let output = Arc::new(Mutex::new(io::stdout()));
+    let (shell_events_tx, shell_events_rx) = mpsc::channel::<ShellEvent>();
+    let output_reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("cannot open WSL Bash output: {error}"))?;
+    start_output_pump(output_reader, shell_events_tx);
+
+    if !interactive {
+        return run_unix_batch_process(&mut *process, shell_events_rx, &output);
+    }
+
+    let (query_tx, query_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let cwd = env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string());
+    start_query_worker(query_rx, result_tx, cwd);
+
+    let _raw_mode = RawModeGuard::enter()?;
+    let mut state = OverlayState::new();
+    let mut running = true;
+
+    while running {
+        while let Ok(shell_event) = shell_events_rx.try_recv() {
+            clear_overlay(&mut state, &output)?;
+            match shell_event {
+                ShellEvent::Output(bytes) => write_terminal(&output, &bytes)?,
+                ShellEvent::Closed => running = false,
+            }
+        }
+        while let Ok(result) = result_rx.try_recv() {
+            if result.generation == state.generation && result.buffer == state.buffer {
+                clear_overlay(&mut state, &output)?;
+                state.suggestions = result.suggestions;
+                state.selected = 0;
+                render_overlay(&mut state, &output)?;
+            }
+        }
+
+        if event::poll(Duration::from_millis(12)).map_err(|error| error.to_string())? {
+            match event::read().map_err(|error| error.to_string())? {
+                Event::Resize(columns, rows) => {
+                    clear_overlay(&mut state, &output)?;
+                    pair.master
+                        .resize(PtySize {
+                            rows,
+                            cols: columns,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        })
+                        .map_err(|error| format!("cannot resize WSL terminal: {error}"))?;
+                    render_overlay(&mut state, &output)?;
+                }
+                Event::Key(key) if accepts_key_event(&key) => {
+                    handle_key(key, &mut state, &writer, &output, &query_tx)?;
+                }
+                _ => {}
+            }
+        }
+
+        if process
+            .try_wait()
+            .map_err(|error| format!("cannot check WSL Bash: {error}"))?
+            .is_some()
+        {
+            clear_overlay(&mut state, &output)?;
+            running = false;
+        }
+    }
+
+    clear_overlay(&mut state, &output)?;
+    let _ = process.kill();
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_unix_batch_process(
+    process: &mut dyn portable_pty::Child,
+    events: mpsc::Receiver<ShellEvent>,
+    output: &Arc<Mutex<io::Stdout>>,
+) -> Result<(), String> {
+    loop {
+        match events.recv_timeout(Duration::from_millis(20)) {
+            Ok(ShellEvent::Output(bytes)) => write_terminal(output, &bytes)?,
+            Ok(ShellEvent::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout)
+                if process
+                    .try_wait()
+                    .map_err(|error| format!("cannot check WSL Bash: {error}"))?
+                    .is_some() =>
+            {
+                while let Ok(ShellEvent::Output(bytes)) = events.try_recv() {
+                    write_terminal(output, &bytes)?;
+                }
+                return Ok(());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 pub fn run(_args: Vec<String>) -> Result<(), String> {
-    Err("live Bash overlay currently requires Windows ConPTY".to_string())
+    Err("live Bash overlay is unsupported on this platform".to_string())
+}
+
+#[cfg(unix)]
+fn is_wsl_runtime() -> bool {
+    is_wsl_environment(
+        env::var_os("WSL_INTEROP").is_some(),
+        env::var_os("WSL_DISTRO_NAME").is_some(),
+    )
+}
+
+#[cfg(any(unix, test))]
+fn is_wsl_environment(has_interop: bool, has_distro_name: bool) -> bool {
+    has_interop || has_distro_name
 }
 
 #[cfg(windows)]
@@ -215,6 +376,7 @@ fn supports_live_overlay() -> bool {
     !term.is_empty() && term != "dumb"
 }
 
+#[cfg(windows)]
 fn quote_windows_argument(value: impl AsRef<str>) -> String {
     let value = value.as_ref();
     if !value.contains([' ', '\t', '"']) {
@@ -701,6 +863,14 @@ mod tests {
         assert!(accepts_key_event(&repeat));
     }
 
+    #[test]
+    fn detects_wsl_from_either_runtime_environment_variable() {
+        assert!(is_wsl_environment(true, false));
+        assert!(is_wsl_environment(false, true));
+        assert!(!is_wsl_environment(false, false));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn quotes_windows_arguments_with_spaces_or_quotes() {
         assert_eq!(quote_windows_argument("git status"), "\"git status\"");

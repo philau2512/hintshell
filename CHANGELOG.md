@@ -2,6 +2,19 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.2] - 2026-03-14
+
+### New Features
+- **WSL2 Bash live overlay**: Interactive WSL2 Bash sessions now use a Unix pseudo-terminal backend for the same realtime command overlay and Bash-native path/flag completion policy as Git Bash.
+
+### Bug Fixes
+- **WSL workspace directory**: The Unix PTY child now explicitly inherits the parent terminal's current directory, so a WSL terminal opened at a workspace remains there after the live wrapper starts.
+
+### Compatibility
+- **Git Bash isolation**: Git Bash remains on its existing Windows ConPTY backend.
+- **PowerShell isolation**: PowerShell module, predictor, handlers, protocol, and overlay behavior are unchanged.
+- **Native Unix fallback**: Linux/macOS Bash continue using the existing Tab/fzf picker outside WSL2.
+
 ## [0.3.1] - 2026-03-14
 
 ### 🐛 Bug Fixes

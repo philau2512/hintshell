@@ -84,11 +84,11 @@ source ~/.bashrc
 
 ## 📖 Usage
 
-### Git Bash (Windows)
+### Git Bash / WSL2 Bash
 
-After `hs init`, opening a normal interactive Git Bash session automatically starts `hintshell bash`, which renders a local live overlay as you type. `fzf` is not required for this live mode.
+After `hs init`, opening a normal interactive Git Bash or WSL2 Bash session automatically starts `hintshell bash`, which renders a local live overlay as you type. `fzf` is not required for this live mode.
 
-- **↑ / ↓** navigate HintShell suggestions; **Esc** closes the overlay; **Enter** executes through Git Bash.
+- **↑ / ↓** navigate HintShell suggestions; **Esc** closes the overlay; **Enter** executes through Bash.
 - **Tab** accepts only a compatible command suggestion. Path input such as `cd src/comp`, flags such as `git --ver`, and empty overlays are forwarded to Bash's native completion.
 - The overlay adapts near the bottom of the terminal: it shows fewer rows when space is limited and stays hidden when a complete frame would scroll the terminal.
 - To bypass the wrapper for one shell, run:
@@ -97,9 +97,11 @@ After `hs init`, opening a normal interactive Git Bash session automatically sta
 HINTSHELL_DISABLE_AUTO_BASH=1 bash
 ```
 
-- Set `HINTSHELL_BASH` to an explicit `bash.exe` path. Set `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to reject the wrapper in unsupported terminals.
+- Git Bash keeps its existing Windows ConPTY backend. WSL2 uses a separate Unix pseudo-terminal backend and preserves the terminal's current working directory; neither changes PowerShell integration.
+- Native Linux and macOS Bash retain the existing `Tab`/`fzf` picker instead of starting the live wrapper.
+- Set `HINTSHELL_BASH` to an explicit `bash.exe` path on Git Bash. Set `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to reject the wrapper in unsupported terminals.
 
-> **Preview limitation:** the live wrapper targets ANSI-capable Windows Terminal and mintty. For full-screen terminal applications, bypass the wrapper and open them from a normal Git Bash session.
+> **Preview limitation:** the live wrapper requires an ANSI-capable terminal. For full-screen terminal applications, bypass the wrapper and open them from a normal Bash session.
 
 ### Zsh / Bash (macOS/Linux)
 
@@ -122,11 +124,11 @@ Each request includes the current working directory and shell. HintShell merges 
 
 ---
 
-## ✨ What's new in 0.3.0
+## ✨ What's new in 0.3.2
 
-- Context-aware suggestions merge local/global history with path, workspace, Git, npm, Docker, SSH, and zoxide candidates.
-- Git Bash launches the live overlay automatically after `hs init`; Bash retains authority for path and flag completion.
-- The live overlay scrolls long result sets and avoids stale rendering at the bottom of the terminal. See [CHANGELOG.md](./CHANGELOG.md).
+- WSL2 Bash now launches the same realtime live overlay as Git Bash while preserving the terminal's current workspace directory.
+- Git Bash remains on the Windows ConPTY backend and PowerShell behavior is unchanged.
+- Native Linux/macOS Bash continues using the existing `Tab`/`fzf` picker. See [CHANGELOG.md](./CHANGELOG.md).
 
 ## 🔄 Updating
 

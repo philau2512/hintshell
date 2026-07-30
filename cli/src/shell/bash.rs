@@ -83,9 +83,9 @@ if [ -x "{cli}" ]; then
   _hs_hook="$("{cli}" hook bash 2>/dev/null)" && [ -n "$_hs_hook" ] && eval "$_hs_hook"
   unset _hs_hook
 fi
-# Start the live overlay only for a normal interactive Git Bash session.
+# Start the live overlay only for a normal interactive Git Bash or WSL2 session.
 # Set HINTSHELL_DISABLE_AUTO_BASH=1 to bypass it for one session.
-if [[ -n "${{MSYSTEM:-}}" && $- == *i* && -t 0 && -t 1 && -z "${{BASH_EXECUTION_STRING:-}}" && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
+if [[ ( -n "${{MSYSTEM:-}}" || -n "${{WSL_INTEROP:-}}" || -n "${{WSL_DISTRO_NAME:-}}" ) && $- == *i* && -t 0 && -t 1 && -z "${{BASH_EXECUTION_STRING:-}}" && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
   exec "{cli}" bash
 fi
 # End HintShell
@@ -105,6 +105,9 @@ mod tests {
         assert!(line.contains("HINTSHELL_DISABLE_AUTO_BASH"));
         assert!(line.contains("BASH_EXECUTION_STRING"));
         assert!(line.contains("HINTSHELL_LIVE_BASH"));
+        assert!(line.contains("MSYSTEM"));
+        assert!(line.contains("WSL_INTEROP"));
+        assert!(line.contains("WSL_DISTRO_NAME"));
         assert!(line.contains("exec \""));
         assert!(line.contains("\" bash"));
     }
