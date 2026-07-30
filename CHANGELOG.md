@@ -2,6 +2,23 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.0] - 2026-03-14
+
+### ✨ New Features
+- **Context-aware suggestions**: The suggestion protocol now carries the current directory and shell. HintShell merges local/global history with bounded candidates for paths, Git branches/remotes, npm scripts, Docker, SSH hosts, and zoxide directories.
+- **Local history ranking**: Commands used in the active directory receive a bounded boost without displacing stronger prefix matches or relevant global history.
+- **Git Bash live overlay auto-start**: `hs init` now configures normal interactive Git Bash sessions to launch `hintshell bash` automatically. Set `HINTSHELL_DISABLE_AUTO_BASH=1` to bypass it for one session.
+
+### ✨ Improvements
+- **Git Bash completion policy**: The live wrapper accepts command-prefix suggestions on Tab and defers path and flag input to native Bash completion.
+- **Git Bash overlay viewport**: Up/Down selection scrolls a six-row viewport for longer result sets.
+- **Safe contextual I/O**: Filesystem, workspace, and external-process generators use bounded output, deadlines, caches, and fail-closed behavior so suggestion requests do not block terminal input.
+- **PowerShell installation refresh**: `hs init` replaces an existing HintShell integration block and updates the installed module asset instead of retaining an older module.
+
+### 🐛 Bug Fixes
+- **Overlay at terminal bottom**: Live Git Bash now caps visible rows to the space below the prompt, and hides the frame when even a minimal overlay would scroll the terminal. This prevents stale or duplicated render artifacts.
+- **Git Bash path resolution**: Contextual filesystem lookup converts MSYS `/c/...` paths before filesystem access and keeps the user's slash style in displayed suggestions.
+
 ## [0.2.1] - 2026-07-18
 
 ### 🐛 Bug Fixes

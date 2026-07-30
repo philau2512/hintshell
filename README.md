@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">HintShell</h1>
-<p align="center"><strong>Next-Gen AI-Ready Real-time Command Suggestions for Your Terminal</strong></p>
+<p align="center"><strong>Local, Context-Aware Real-time Command Suggestions for Your Terminal</strong></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/hintshell"><img src="https://img.shields.io/npm/v/hintshell?color=CB3837&label=npm" alt="NPM Version" /></a>
@@ -14,14 +14,20 @@
 </p>
 
 <p align="center">
-  HintShell is an <strong>AI-ready productivity engine</strong> that <strong>embeds into your existing shell</strong> (PowerShell, Bash, or Zsh). It provides <strong>context-aware command suggestions</strong> in real-time, drastically reducing context-switching and boosting developer workflow efficiency. Built with <strong>Rust</strong> for maximum performance and minimum footprint.
+  HintShell is a <strong>local command-suggestion engine</strong> that <strong>embeds into your existing shell</strong> (PowerShell, Bash, or Zsh). It combines your command history with bounded context from the current directory and workspace, then presents suggestions without replacing native shell completion. Built with <strong>Rust</strong> for a small, responsive footprint.
 </p>
 
+<p align="center">
+  <img src="assets/image1.png" alt="HintShell live suggestions in Git Bash" width="860" />
+</p>
+<p align="center">
+  <img src="assets/image2.png" alt="HintShell contextual suggestions in Git Bash" width="860" />
+</p>
 ---
 
 ## ⚡ Why HintShell?
 
-Most shells offer basic, single-line autocomplete. HintShell replaces that with a <strong>smart, interactive suggestion panel</strong> — a context-aware UI/UX upgrade right inside your terminal. It's the <strong>modern alternative to PSReadLine and zsh-autosuggestions</strong>.
+Most shells offer basic, single-line autocomplete. HintShell adds a <strong>smart, interactive suggestion panel</strong> while keeping each shell authoritative for its own completion behavior: Bash and PSReadLine still own path and flag completion, and HintShell only supplies advisory command suggestions.
 
 | Feature | HintShell | PowerShell <br>(PSReadLine) | Zsh <br>(zsh-autosuggestions) | Bash | Git Bash | Fish |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -78,40 +84,49 @@ source ~/.bashrc
 
 ## 📖 Usage
 
+### Git Bash (Windows)
+
+After `hs init`, opening a normal interactive Git Bash session automatically starts `hintshell bash`, which renders a local live overlay as you type. `fzf` is not required for this live mode.
+
+- **↑ / ↓** navigate HintShell suggestions; **Esc** closes the overlay; **Enter** executes through Git Bash.
+- **Tab** accepts only a compatible command suggestion. Path input such as `cd src/comp`, flags such as `git --ver`, and empty overlays are forwarded to Bash's native completion.
+- The overlay adapts near the bottom of the terminal: it shows fewer rows when space is limited and stays hidden when a complete frame would scroll the terminal.
+- To bypass the wrapper for one shell, run:
+
+```bash
+HINTSHELL_DISABLE_AUTO_BASH=1 bash
+```
+
+- Set `HINTSHELL_BASH` to an explicit `bash.exe` path. Set `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to reject the wrapper in unsupported terminals.
+
+> **Preview limitation:** the live wrapper targets ANSI-capable Windows Terminal and mintty. For full-screen terminal applications, bypass the wrapper and open them from a normal Git Bash session.
+
+### Zsh / Bash (macOS/Linux)
+
+**Tab-to-Suggest** uses `fzf` when available. Type `git ` and press **Tab** to open a ranked command picker; **Enter** fills the command line. If `fzf` is unavailable, HintShell uses the top matching command without emitting an executable-path error.
+
+### Context-aware suggestions
+
+Each request includes the current working directory and shell. HintShell merges bounded contextual candidates with local and global history, then ranks the combined list once.
+
+- Paths for supported argument positions, including `cd`, `pushd`, `mkdir`, `rmdir`, `cat`, `rg`, `git add`, and `docker build`.
+- Git branches/remotes, npm-family scripts, Docker entities, SSH hosts, and zoxide directories when the command and local runtime are available.
+- Local-history matches are boosted only for the active directory; prefix quality remains more important than contextual or fuzzy matches.
+- Filesystem scans, workspace detection, and external commands are bounded, cached where appropriate, and fail closed. Context candidates never write themselves to command history.
+
 ### PowerShell (Windows/Unix)
-**Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type. 
+**Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type.
 - **↑ / ↓** : Navigate
 - **Tab** : Accept
 - **Esc** : Close
 
-### Zsh / Bash (macOS/Linux/Git Bash)
-**Tab-to-Suggest**: To avoid conflicts with `zsh-autosuggestions`, HintShell activates when you press **Tab**.
-- **Type `git ` + Tab** : Opens a fuzzy picker with frequencies.
-- **Enter** : Select and fill the command line.
-
-### Git Bash live overlay (Windows preview)
-Run Git Bash through the opt-in wrapper to render local HintShell suggestions while you type, without starting `fzf`:
-
-```bash
-hintshell bash
-```
-
-- **Tab** accepts a HintShell command suggestion only for command text. For paths such as `cd src/comp`, flags such as `git --ver`, or an empty overlay, it is forwarded to Bash completion.
-- **Up / Down** navigates the visible HintShell list; **Esc** closes it; **Enter** executes through Git Bash.
-- The wrapper preserves the existing `.bashrc` integration. Open Git Bash normally to use the legacy Tab/fzf flow.
-- Use `HINTSHELL_BASH` to set an explicit `bash.exe` path, or `HINTSHELL_DISABLE_LIVE_OVERLAY=1` to refuse the wrapper in unsupported terminals.
-
-> **Preview limitation:** the live wrapper currently targets ANSI-capable Windows Terminal and mintty. Full-screen terminal applications should be opened from a normal Git Bash session until their passthrough behavior is included in a later release.
-
-> **Git Bash note:** HintShell resolves `fzf` to a real executable (e.g. under WinGet Packages). If you previously saw `Permission denied` on `WinGet/Links/fzf`, reinstall/update to **0.2.0+**, run `hs init` (or reload `~/.bashrc`), and open a new terminal.
-
 ---
 
-## ✨ What's new in 0.2.1
+## ✨ What's new in 0.3.0
 
-- Daemon single-instance + IDE terminal reliability (no stacked `hintshell-core`, IPC health checks).
-- Safe update while running: `npm i -g hintshell@latest` / `hs update` stop the daemon before replacing Windows binaries.
-- Clearer start/status/update logs. See [CHANGELOG.md](./CHANGELOG.md).
+- Context-aware suggestions merge local/global history with path, workspace, Git, npm, Docker, SSH, and zoxide candidates.
+- Git Bash launches the live overlay automatically after `hs init`; Bash retains authority for path and flag completion.
+- The live overlay scrolls long result sets and avoids stale rendering at the bottom of the terminal. See [CHANGELOG.md](./CHANGELOG.md).
 
 ## 🔄 Updating
 

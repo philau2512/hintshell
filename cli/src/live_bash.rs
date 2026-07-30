@@ -5,6 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crossterm::cursor::position;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use hintshell_core::api::protocol::{HintShellRequest, SuggestionItem};
@@ -538,10 +539,15 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         return Ok(());
     }
 
-    let (terminal_width, _) = size().unwrap_or((100, 30));
+    let (terminal_width, terminal_height) = size().unwrap_or((100, 30));
     let width = usize::from(terminal_width).clamp(44, 78);
     let total = state.suggestions.len();
-    let shown = total.min(MAX_VISIBLE_SUGGESTIONS);
+    let (_, cursor_row) = position().unwrap_or((0, 0));
+    let shown = visible_suggestion_rows(cursor_row, terminal_height, total);
+    if shown == 0 {
+        return Ok(());
+    }
+    let rendered_lines = shown + 3;
     let selected = state.selected.min(total.saturating_sub(1));
     let viewport_start = viewport_start(selected, total, shown);
     let viewport_end = viewport_start + shown;
@@ -599,8 +605,14 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.flush())
         .map_err(|error| format!("cannot render HintShell overlay: {error}"))?;
-    state.rendered_lines = shown + 3;
+    state.rendered_lines = rendered_lines;
     Ok(())
+}
+
+fn visible_suggestion_rows(cursor_row: u16, terminal_height: u16, total: usize) -> usize {
+    let rows_below_prompt = terminal_height.saturating_sub(cursor_row.saturating_add(1));
+    let rows_for_suggestions = usize::from(rows_below_prompt.saturating_sub(3));
+    total.min(MAX_VISIBLE_SUGGESTIONS).min(rows_for_suggestions)
 }
 
 fn viewport_start(selected: usize, total: usize, viewport_size: usize) -> usize {
@@ -638,6 +650,13 @@ mod tests {
             frequency: 1,
             source: "history".to_string(),
         }
+    }
+
+    #[test]
+    fn overlay_caps_rows_to_remaining_space_without_scrolling() {
+        assert_eq!(visible_suggestion_rows(3, 30, 12), 6);
+        assert_eq!(visible_suggestion_rows(25, 30, 12), 1);
+        assert_eq!(visible_suggestion_rows(26, 30, 12), 0);
     }
 
     #[test]
