@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use tracing::{error, info, warn};
-use tracing_subscriber;
 
 use hintshell_core::api::server::HintShellServer;
 
@@ -67,10 +66,7 @@ fn try_claim_single_instance() -> Option<InstanceGuard> {
     unsafe {
         let handle = CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr());
         if handle.is_null() {
-            warn!(
-                "CreateMutexW failed: {}",
-                std::io::Error::last_os_error()
-            );
+            warn!("CreateMutexW failed: {}", std::io::Error::last_os_error());
             // Fail open: still try to start; pipe first_instance is the backup.
             return Some(InstanceGuard {
                 _handle: std::ptr::null_mut(),

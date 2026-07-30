@@ -27,20 +27,30 @@ pub struct HistoryStore {
     conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalHistoryStats {
+    pub frequency: i64,
+    pub last_used: DateTime<Utc>,
+}
+
 impl HistoryStore {
     pub fn new(db_path: &PathBuf) -> SqlResult<Self> {
         let conn = Connection::open(db_path)?;
         // Avoid multi-process hang if a stale reader briefly holds the DB.
         conn.busy_timeout(std::time::Duration::from_secs(3))?;
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.init_tables()?;
         Ok(store)
     }
 
     pub fn in_memory() -> SqlResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.init_tables()?;
         Ok(store)
     }
@@ -62,6 +72,17 @@ impl HistoryStore {
             CREATE INDEX IF NOT EXISTS idx_command ON history(command);
             CREATE INDEX IF NOT EXISTS idx_frequency ON history(frequency DESC);
             CREATE INDEX IF NOT EXISTS idx_last_used ON history(last_used DESC);
+
+            CREATE TABLE IF NOT EXISTS history_context (
+                command   TEXT NOT NULL,
+                directory TEXT NOT NULL,
+                frequency INTEGER NOT NULL DEFAULT 1,
+                last_used TEXT NOT NULL,
+                PRIMARY KEY (command, directory)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_context_directory
+                ON history_context(directory, frequency DESC, last_used DESC);
             ",
         )?;
 
@@ -90,14 +111,22 @@ impl HistoryStore {
             > 0;
 
         if !has_source {
-            conn.execute("ALTER TABLE history ADD COLUMN source TEXT DEFAULT 'user'", [])?;
+            conn.execute(
+                "ALTER TABLE history ADD COLUMN source TEXT DEFAULT 'user'",
+                [],
+            )?;
         }
 
         Ok(())
     }
 
     /// Add a command to history. If it already exists, increment frequency and update timestamp.
-    pub fn add_command(&self, command: &str, directory: Option<&str>, shell: Option<&str>) -> SqlResult<()> {
+    pub fn add_command(
+        &self,
+        command: &str,
+        directory: Option<&str>,
+        shell: Option<&str>,
+    ) -> SqlResult<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
 
@@ -123,7 +152,46 @@ impl HistoryStore {
                 )?;
             }
         }
+
+        if let Some(directory) = directory.filter(|directory| !directory.trim().is_empty()) {
+            conn.execute(
+                "INSERT INTO history_context (command, directory, frequency, last_used)
+                 VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(command, directory) DO UPDATE SET
+                     frequency = history_context.frequency + 1,
+                     last_used = excluded.last_used",
+                params![command, directory, now],
+            )?;
+        }
         Ok(())
+    }
+
+    pub fn get_local_history(
+        &self,
+        directory: &str,
+    ) -> SqlResult<HashMap<String, LocalHistoryStats>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT command, frequency, last_used
+             FROM history_context
+             WHERE directory = ?1",
+        )?;
+
+        let stats = statement
+            .query_map(params![directory], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    LocalHistoryStats {
+                        frequency: row.get(1)?,
+                        last_used: row
+                            .get::<_, String>(2)?
+                            .parse::<DateTime<Utc>>()
+                            .unwrap_or_else(|_| Utc::now()),
+                    },
+                ))
+            })?
+            .collect::<SqlResult<HashMap<_, _>>>()?;
+        Ok(stats)
     }
 
     /// Search commands by prefix match, ordered by ranking score.
@@ -144,7 +212,8 @@ impl HistoryStore {
                     id: Some(row.get(0)?),
                     command: row.get(1)?,
                     frequency: row.get(2)?,
-                    last_used: row.get::<_, String>(3)?
+                    last_used: row
+                        .get::<_, String>(3)?
                         .parse::<DateTime<Utc>>()
                         .unwrap_or_else(|_| Utc::now()),
                     directory: row.get(4)?,
@@ -171,7 +240,8 @@ impl HistoryStore {
                     id: Some(row.get(0)?),
                     command: row.get(1)?,
                     frequency: row.get(2)?,
-                    last_used: row.get::<_, String>(3)?
+                    last_used: row
+                        .get::<_, String>(3)?
                         .parse::<DateTime<Utc>>()
                         .unwrap_or_else(|_| Utc::now()),
                     directory: row.get(4)?,
@@ -202,7 +272,8 @@ impl HistoryStore {
                 id: Some(row.get(0)?),
                 command: row.get(1)?,
                 frequency: row.get(2)?,
-                last_used: row.get::<_, String>(3)?
+                last_used: row
+                    .get::<_, String>(3)?
                     .parse::<DateTime<Utc>>()
                     .unwrap_or_else(|_| Utc::now()),
                 directory: row.get(4)?,
@@ -236,7 +307,7 @@ impl HistoryStore {
             .map_err(|e| e.to_string())?;
 
         let mut count = 0;
-        for (_category, commands) in &categories {
+        for commands in categories.values() {
             for cmd_obj in commands {
                 let trimmed = cmd_obj.command.trim();
                 let desc = cmd_obj.description.clone();
@@ -268,8 +339,7 @@ impl HistoryStore {
             }
         }
 
-        conn.execute_batch("COMMIT")
-            .map_err(|e| e.to_string())?;
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
         Ok(count)
     }
@@ -280,10 +350,10 @@ impl HistoryStore {
         conn.execute(
             "UPDATE history SET last_used = ?1 WHERE command = ?2",
             params![time, command],
-        ).unwrap();
+        )
+        .unwrap();
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -293,13 +363,39 @@ mod tests {
     fn test_add_and_search() {
         let store = HistoryStore::in_memory().unwrap();
 
-        store.add_command("git init", None, Some("powershell")).unwrap();
-        store.add_command("git commit -m \"test\"", None, Some("powershell")).unwrap();
-        store.add_command("git push", None, Some("powershell")).unwrap();
+        store
+            .add_command("git init", None, Some("powershell"))
+            .unwrap();
+        store
+            .add_command("git commit -m \"test\"", None, Some("powershell"))
+            .unwrap();
+        store
+            .add_command("git push", None, Some("powershell"))
+            .unwrap();
 
         let results = store.search_by_prefix("git", 10).unwrap();
         assert_eq!(results.len(), 3);
         assert!(results[0].command.starts_with("git"));
+    }
+
+    #[test]
+    fn test_local_history_is_tracked_per_directory() {
+        let store = HistoryStore::in_memory().unwrap();
+
+        store
+            .add_command("cargo test", Some("C:/projects/a"), Some("powershell"))
+            .unwrap();
+        store
+            .add_command("cargo test", Some("C:/projects/a"), Some("powershell"))
+            .unwrap();
+        store
+            .add_command("cargo test", Some("C:/projects/b"), Some("powershell"))
+            .unwrap();
+
+        let first = store.get_local_history("C:/projects/a").unwrap();
+        let second = store.get_local_history("C:/projects/b").unwrap();
+        assert_eq!(first["cargo test"].frequency, 2);
+        assert_eq!(second["cargo test"].frequency, 1);
     }
 
     #[test]
@@ -323,7 +419,9 @@ mod tests {
 
         // git commit used 5 times -> should rank higher
         for _ in 0..5 {
-            store.add_command("git commit -m \"msg\"", None, None).unwrap();
+            store
+                .add_command("git commit -m \"msg\"", None, None)
+                .unwrap();
         }
 
         store.add_command("git push", None, None).unwrap();
@@ -337,7 +435,7 @@ mod tests {
         let store = HistoryStore::in_memory().unwrap();
         let json = r#"{ "git": [{ "command": "git pull", "description": "pull changes" }] }"#;
         store.seed_defaults(json).unwrap();
-        
+
         let results = store.search_by_prefix("git", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source, "default");

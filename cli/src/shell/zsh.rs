@@ -1,6 +1,4 @@
-use super::{
-    bin_dir_posix, cli_bin_posix, core_bin_posix, fzf_picker_args, fzf_resolve_functions,
-};
+use super::{bin_dir_posix, cli_bin_posix, core_bin_posix, fzf_picker_args, fzf_resolve_functions};
 
 /// Generate Zsh hook script (Tab-to-FZF, compatible with zsh-autosuggestions)
 pub fn hook_script() -> String {
@@ -27,7 +25,7 @@ pub fn hook_script() -> String {
         // Multi-line buffer: fall back to default completion
         "    case \"$typed\" in *$'\\n'*|*$'\\r'*) zle expand-or-complete; return ;; esac\n".to_string(),
         "    local suggestions\n".to_string(),
-        "    suggestions=$(\"$HINTSHELL_BIN\" suggest \"$typed\" --limit 15 --format fzf 2>/dev/null)\n"
+        "    suggestions=$(\"$HINTSHELL_BIN\" suggest \"$typed\" --limit 15 --cwd \"$PWD\" --shell zsh --format fzf 2>/dev/null)\n"
             .to_string(),
         "    [[ -z \"$suggestions\" ]] && { zle expand-or-complete; return }\n".to_string(),
         "    local count selected=\"\"\n".to_string(),
@@ -57,7 +55,7 @@ pub fn hook_script() -> String {
         "\n_hintshell_precmd() {\n".to_string(),
         "    _hintshell_ensure_daemon\n".to_string(),
         "    local last_cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n".to_string(),
-        "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell zsh >/dev/null 2>&1 &)\n"
+        "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --directory \"$PWD\" --shell zsh >/dev/null 2>&1 &)\n"
             .to_string(),
         "}\n".to_string(),
         "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),

@@ -158,7 +158,8 @@ function script:Invoke-HSDaemon {
     try {
         $pipe  = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::InOut)
         $pipe.Connect(300)
-        $json  = (@{ action = 'suggest'; input = $Query; limit = $Limit } | ConvertTo-Json -Compress) + "`n"
+        $cwd = (Get-Location).Path
+        $json  = (@{ action = 'suggest'; input = $Query; limit = $Limit; cwd = $cwd; shell = 'powershell' } | ConvertTo-Json -Compress) + "`n"
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $pipe.Write($bytes, 0, $bytes.Length)
         $pipe.Flush()
@@ -183,7 +184,8 @@ function script:Invoke-HSRecord {
     try {
         $pipe  = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::InOut)
         $pipe.Connect(300)
-        $json  = (@{ action = 'add'; command = $Command; shell = 'powershell' } | ConvertTo-Json -Compress) + "`n"
+        $cwd = (Get-Location).Path
+        $json  = (@{ action = 'add'; command = $Command; directory = $cwd; shell = 'powershell' } | ConvertTo-Json -Compress) + "`n"
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $pipe.Write($bytes, 0, $bytes.Length)
         $pipe.Flush()

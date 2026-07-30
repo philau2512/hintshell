@@ -125,7 +125,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let (query_tx, query_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
-    start_query_worker(query_rx, result_tx);
+    let cwd = env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string());
+    start_query_worker(query_rx, result_tx, cwd);
 
     let _raw_mode = RawModeGuard::enter()?;
     let mut state = OverlayState::new();
@@ -237,7 +240,7 @@ fn resolve_bash() -> Result<String, String> {
                 return Ok(candidate.to_string());
             }
         }
-        return Ok("bash.exe".to_string());
+        Ok("bash.exe".to_string())
     }
 
     #[cfg(not(windows))]
@@ -289,9 +292,19 @@ struct SuggestionResult {
     suggestions: Vec<SuggestionItem>,
 }
 
+fn query_request(input: String, cwd: Option<String>) -> HintShellRequest {
+    HintShellRequest::Suggest {
+        input,
+        limit: 12,
+        cwd,
+        shell: Some("bash".to_string()),
+    }
+}
+
 fn start_query_worker(
     receiver: mpsc::Receiver<(u64, String)>,
     sender: mpsc::Sender<SuggestionResult>,
+    cwd: Option<String>,
 ) {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
@@ -306,10 +319,7 @@ fn start_query_worker(
                 buffer = next_buffer;
             }
 
-            let request = HintShellRequest::Suggest {
-                input: buffer.clone(),
-                limit: 12,
-            };
+            let request = query_request(buffer.clone(), cwd.clone());
             let suggestions = runtime
                 .block_on(async {
                     tokio::time::timeout(QUERY_TIMEOUT, crate::send_request(&request))
@@ -530,18 +540,25 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
 
     let (terminal_width, _) = size().unwrap_or((100, 30));
     let width = usize::from(terminal_width).clamp(44, 78);
-    let shown = state.suggestions.len().min(MAX_VISIBLE_SUGGESTIONS);
-    let selected = state.selected.min(shown.saturating_sub(1));
+    let total = state.suggestions.len();
+    let shown = total.min(MAX_VISIBLE_SUGGESTIONS);
+    let selected = state.selected.min(total.saturating_sub(1));
+    let viewport_start = viewport_start(selected, total, shown);
+    let viewport_end = viewport_start + shown;
     let mut frame = String::from("\x1b7\n");
-    let counter = format!(" {}/{} ", selected + 1, state.suggestions.len());
+    let counter = format!(" {}/{} ", selected + 1, total);
     frame.push_str(&format!(
         "\r\x1b[38;5;141m╭{}{}╮\x1b[0m\n",
         "─".repeat(width.saturating_sub(counter.len() + 2)),
         counter
     ));
 
-    for (index, suggestion) in state.suggestions.iter().take(shown).enumerate() {
-        let selected_row = index == selected;
+    for (index, suggestion) in state.suggestions[viewport_start..viewport_end]
+        .iter()
+        .enumerate()
+    {
+        let suggestion_index = viewport_start + index;
+        let selected_row = suggestion_index == selected;
         let command = fit_width(&suggestion.command, width.saturating_sub(30));
         let source = fit_width(&suggestion.source, 20);
         let marker = if selected_row { "▶" } else { " " };
@@ -586,6 +603,17 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     Ok(())
 }
 
+fn viewport_start(selected: usize, total: usize, viewport_size: usize) -> usize {
+    if total <= viewport_size {
+        return 0;
+    }
+
+    selected
+        .saturating_add(1)
+        .saturating_sub(viewport_size)
+        .min(total - viewport_size)
+}
+
 fn fit_width(text: &str, max_width: usize) -> String {
     let mut result = String::new();
     for character in text.chars() {
@@ -610,6 +638,30 @@ mod tests {
             frequency: 1,
             source: "history".to_string(),
         }
+    }
+
+    #[test]
+    fn viewport_scrolls_to_keep_selected_item_visible() {
+        assert_eq!(viewport_start(0, 12, 6), 0);
+        assert_eq!(viewport_start(5, 12, 6), 0);
+        assert_eq!(viewport_start(6, 12, 6), 1);
+        assert_eq!(viewport_start(11, 12, 6), 6);
+    }
+
+    #[test]
+    fn live_query_includes_wrapper_cwd() {
+        let request = query_request(
+            "cd ".to_string(),
+            Some(r"D:\Admin\Documents\PROJECTS\HintShell".to_string()),
+        );
+        assert!(matches!(
+            request,
+            HintShellRequest::Suggest {
+                cwd: Some(cwd),
+                shell: Some(shell),
+                ..
+            } if cwd == r"D:\Admin\Documents\PROJECTS\HintShell" && shell == "bash"
+        ));
     }
 
     #[test]

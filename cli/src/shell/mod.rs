@@ -145,7 +145,7 @@ pub fn fzf_picker_args() -> &'static str {
 }
 
 pub enum Shell {
-    PowerShell,
+    Power,
     Bash,
     Zsh,
 }
@@ -153,7 +153,7 @@ pub enum Shell {
 impl Shell {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "powershell" | "pwsh" => Some(Self::PowerShell),
+            "powershell" | "pwsh" => Some(Self::Power),
             "bash" => Some(Self::Bash),
             "zsh" => Some(Self::Zsh),
             _ => None,
@@ -162,7 +162,7 @@ impl Shell {
 
     pub fn name(&self) -> &str {
         match self {
-            Self::PowerShell => "PowerShell",
+            Self::Power => "PowerShell",
             Self::Bash => "Bash",
             Self::Zsh => "Zsh",
         }
@@ -171,7 +171,7 @@ impl Shell {
     /// Path to the shell's rc/profile config file
     pub fn config_path(&self) -> Option<PathBuf> {
         match self {
-            Self::PowerShell => {
+            Self::Power => {
                 #[cfg(windows)]
                 {
                     let docs = dirs::document_dir()?;
@@ -193,12 +193,16 @@ impl Shell {
         let module_dir = hintshell_home().join("module");
         let module_dir_str = module_dir.to_string_lossy().replace('\\', "/");
         let bin_dir = hintshell_home().join("bin");
-        let daemon_name = if cfg!(windows) { "hintshell-core.exe" } else { "hintshell-core" };
+        let daemon_name = if cfg!(windows) {
+            "hintshell-core.exe"
+        } else {
+            "hintshell-core"
+        };
         let daemon_path = bin_dir.join(daemon_name);
         let daemon_str = daemon_path.to_string_lossy().replace('\\', "/");
 
         match self {
-            Self::PowerShell => powershell::hook_script(&daemon_str, &module_dir_str),
+            Self::Power => powershell::hook_script(&daemon_str, &module_dir_str),
             Self::Bash => bash::hook_script(),
             Self::Zsh => zsh::hook_script(),
         }
@@ -212,7 +216,7 @@ impl Shell {
         let module_str = module_dir.to_string_lossy().replace('\\', "/");
 
         let init_line = match self {
-            Self::PowerShell => powershell::install_line(&module_str),
+            Self::Power => powershell::install_line(&module_str),
             Self::Bash => bash::install_line(),
             Self::Zsh => zsh::install_line(),
         };
@@ -228,15 +232,9 @@ impl Shell {
             String::new()
         };
 
-        // Use the comment marker as idempotency check
-        if !content.contains("# HintShell Initialization") {
-            let mut new_content = content;
-            new_content.push_str(&init_line);
-            fs::write(&config, new_content).map_err(|e| e.to_string())?;
-            Ok(())
-        } else {
-            Err("Already installed".to_string())
-        }
+        let new_content = replace_init_block(&content, &init_line);
+        fs::write(&config, new_content).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Uninstall hook line from shell config file
@@ -286,6 +284,29 @@ impl Shell {
     }
 }
 
+fn replace_init_block(content: &str, init_line: &str) -> String {
+    const MARKER: &str = "# HintShell Initialization";
+    const END_MARKER: &str = "# End HintShell";
+
+    let Some(start) = content.find(MARKER) else {
+        return format!("{content}{init_line}");
+    };
+    let line_start = content[..start].rfind('\n').map_or(0, |index| index + 1);
+    let end = content[start..]
+        .find(END_MARKER)
+        .map(|offset| {
+            let end = start + offset + END_MARKER.len();
+            if content.as_bytes().get(end) == Some(&b'\n') {
+                end + 1
+            } else {
+                end
+            }
+        })
+        .unwrap_or(content.len());
+
+    format!("{}{}{}", &content[..line_start], init_line, &content[end..])
+}
+
 pub fn uninstall_assets() -> Result<(), String> {
     let home = hintshell_home();
     let bin_dir = home.join("bin");
@@ -302,12 +323,12 @@ pub fn uninstall_assets() -> Result<(), String> {
                 // Self-deleting trick on Windows
                 let path_str = bin_dir.to_string_lossy().to_string();
                 let cmd_str = format!("ping 127.0.0.1 -n 2 > nul & rmdir /s /q \"{}\"", path_str);
-                
+
                 let _ = std::process::Command::new("cmd")
                     .arg("/c")
                     .arg(&cmd_str)
                     .spawn();
-                
+
                 println!("⏳ Scheduled binary removal after termination...");
             }
             #[cfg(unix)]
@@ -316,7 +337,6 @@ pub fn uninstall_assets() -> Result<(), String> {
             }
         }
     }
-
 
     Ok(())
 }
@@ -333,7 +353,11 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
     let mut warnings: Vec<String> = Vec::new();
 
     // 1. Copy hintshell binary itself (skip if we ARE the installed binary — Windows locks running .exe)
-    let hs_name = if cfg!(windows) { "hintshell.exe" } else { "hintshell" };
+    let hs_name = if cfg!(windows) {
+        "hintshell.exe"
+    } else {
+        "hintshell"
+    };
     let dest_hs = bin_dir.join(hs_name);
     match copy_replace(bin_path, &dest_hs) {
         Ok(CopyResult::Copied) => {}
@@ -430,10 +454,7 @@ pub fn install_assets(bin_path: &std::path::Path) -> Result<(), String> {
 
     if !warnings.is_empty() {
         // Non-fatal: CLI self-replace often fails on Windows when running from ~/.hintshell/bin
-        eprintln!(
-            "   ⚠️ Partial asset copy warnings: {}",
-            warnings.join("; ")
-        );
+        eprintln!("   ⚠️ Partial asset copy warnings: {}", warnings.join("; "));
     }
 
     Ok(())
@@ -492,15 +513,7 @@ fn find_module_src(bin_path: &std::path::Path) -> Option<std::path::PathBuf> {
         }
     }
 
-    // Priority B: already-installed module (re-init from ~/.hintshell/bin)
-    if let Some(home) = dirs::home_dir() {
-        let installed = home.join(".hintshell").join("module");
-        if installed.join("HintShellModule.psd1").exists() {
-            return Some(installed);
-        }
-    }
-
-    // Priority C: walk up dirs to find 'integrations/powershell/HintShellModule' (dev mode)
+    // Priority B: walk up dirs to find 'integrations/powershell/HintShellModule' (dev mode)
     let mut dir = bin_path.parent()?.to_path_buf();
     for _ in 0..6 {
         let candidate = dir.join("integrations/powershell/HintShellModule");
@@ -508,6 +521,14 @@ fn find_module_src(bin_path: &std::path::Path) -> Option<std::path::PathBuf> {
             return Some(candidate);
         }
         dir = dir.parent()?.to_path_buf();
+    }
+
+    // Priority C: already-installed module (re-init from ~/.hintshell/bin)
+    if let Some(home) = dirs::home_dir() {
+        let installed = home.join(".hintshell").join("module");
+        if installed.join("HintShellModule.psd1").exists() {
+            return Some(installed);
+        }
     }
 
     None
@@ -530,7 +551,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
 pub fn detect_shells() -> Vec<Shell> {
     let mut shells = Vec::new();
     if is_command_available("pwsh") || is_command_available("powershell") {
-        shells.push(Shell::PowerShell);
+        shells.push(Shell::Power);
     }
     if is_command_available("bash") {
         shells.push(Shell::Bash);
@@ -542,10 +563,12 @@ pub fn detect_shells() -> Vec<Shell> {
 }
 
 fn is_command_available(cmd: &str) -> bool {
-    let cmd = if cfg!(windows) { format!("{}.exe", cmd) } else { cmd.to_string() };
-    env::var_os("PATH").map_or(false, |paths| {
-        env::split_paths(&paths).any(|p| p.join(&cmd).exists())
-    })
+    let cmd = if cfg!(windows) {
+        format!("{}.exe", cmd)
+    } else {
+        cmd.to_string()
+    };
+    env::var_os("PATH").is_some_and(|paths| env::split_paths(&paths).any(|p| p.join(&cmd).exists()))
 }
 
 #[cfg(unix)]
@@ -555,4 +578,22 @@ fn set_executable(path: &std::path::Path) -> std::io::Result<()> {
     perms.set_mode(0o755);
     std::fs::set_permissions(path, perms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_replaces_existing_initialization_block() {
+        let content = "before\n# HintShell Initialization\nold\n# End HintShell\nafter\n";
+        let updated = replace_init_block(
+            content,
+            "# HintShell Initialization\nnew\n# End HintShell\n",
+        );
+        assert_eq!(
+            updated,
+            "before\n# HintShell Initialization\nnew\n# End HintShell\nafter\n"
+        );
+    }
 }

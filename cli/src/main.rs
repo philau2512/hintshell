@@ -52,6 +52,14 @@ enum Commands {
         #[arg(short, long, default_value = "5")]
         limit: usize,
 
+        /// Current working directory for contextual ranking
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Calling shell for contextual ranking
+        #[arg(long)]
+        shell: Option<String>,
+
         /// Output format: 'human' (default) or 'plain' (command names only, for scripts/fzf)
         #[arg(short, long, default_value = "human")]
         format: String,
@@ -164,8 +172,19 @@ async fn main() {
                 }
             }
         }
-        Commands::Suggest { input, limit, format } => {
-            let request = HintShellRequest::Suggest { input, limit };
+        Commands::Suggest {
+            input,
+            limit,
+            cwd,
+            shell,
+            format,
+        } => {
+            let request = HintShellRequest::Suggest {
+                input,
+                limit,
+                cwd: cwd.or_else(current_directory),
+                shell: shell.or_else(current_shell),
+            };
             match send_request(&request).await {
                 Ok(resp) => {
                     if let Some(suggestions) = resp.suggestions {
@@ -177,7 +196,7 @@ async fn main() {
                         } else if format == "fzf" {
                             // FZF: full command + frequency (do not truncate command — accept must be exact)
                             for s in &suggestions {
-                                let cmd = s.command.replace('\t', " ").replace('\n', " ");
+                                let cmd = s.command.replace(['\t', '\n'], " ");
                                 println!("{}\t({}x)", cmd, s.frequency);
                             }
                         } else {
@@ -186,7 +205,8 @@ async fn main() {
                                 println!("(no suggestions)");
                             } else {
                                 for (i, s) in suggestions.iter().enumerate() {
-                                    println!("  {} {} ({}x)",
+                                    println!(
+                                        "  {} {} ({}x)",
                                         if i == 0 { "→" } else { " " },
                                         s.command,
                                         s.frequency
@@ -373,6 +393,25 @@ async fn main() {
     }
 }
 
+fn current_directory() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(ToOwned::to_owned))
+}
+
+fn current_shell() -> Option<String> {
+    if cfg!(windows) {
+        return Some("windows".to_string());
+    }
+
+    std::env::var("SHELL").ok().and_then(|shell| {
+        std::path::Path::new(&shell)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned)
+    })
+}
+
 fn start_daemon() {
     println!("   Checking existing daemon via IPC...");
     // 1) Already healthy?
@@ -391,10 +430,7 @@ fn start_daemon() {
         for i in 1..=8 {
             std::thread::sleep(std::time::Duration::from_millis(200));
             if probe_daemon_alive() {
-                println!(
-                    "✅ Daemon became healthy while waiting (~{}ms).",
-                    i * 200
-                );
+                println!("✅ Daemon became healthy while waiting (~{}ms).", i * 200);
                 return;
             }
         }
@@ -492,15 +528,14 @@ fn probe_daemon_alive() -> bool {
             .build();
         match rt {
             Ok(rt) => rt.block_on(async {
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(1200),
-                    send_request(&HintShellRequest::Status),
+                matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(1200),
+                        send_request(&HintShellRequest::Status),
+                    )
+                    .await,
+                    Ok(Ok(_))
                 )
-                .await
-                {
-                    Ok(Ok(_)) => true,
-                    _ => false,
-                }
             }),
             Err(_) => false,
         }
@@ -541,7 +576,9 @@ fn count_daemon_processes() -> usize {
     }
     #[cfg(not(windows))]
     {
-        let output = Command::new("pgrep").args(["-f", "hintshell-core"]).output();
+        let output = Command::new("pgrep")
+            .args(["-f", "hintshell-core"])
+            .output();
         match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout)
                 .lines()
@@ -654,7 +691,10 @@ fn check_npm_update(local_version: &str) {
                 if let Some(latest_ver) = latest {
                     if is_newer(latest_ver, local_version) {
                         println!();
-                        println!("\x1b[33m🆙 Update available: {} → {}\x1b[0m", local_version, latest_ver);
+                        println!(
+                            "\x1b[33m🆙 Update available: {} → {}\x1b[0m",
+                            local_version, latest_ver
+                        );
                         println!("   Run \x1b[36mhs update\x1b[0m to upgrade.");
                     } else if latest_ver == local_version {
                         println!();
@@ -667,33 +707,43 @@ fn check_npm_update(local_version: &str) {
 }
 
 fn is_newer(latest: &str, local: &str) -> bool {
-    if latest == local { return false; }
-    
+    if latest == local {
+        return false;
+    }
+
     let parse_ver = |v: &str| {
         let base = v.split('-').next().unwrap_or(v);
-        let parts: Vec<u32> = base.split('.')
+        let parts: Vec<u32> = base
+            .split('.')
             .map(|s| s.parse::<u32>().unwrap_or(0))
             .collect();
-        
-        let score = parts.get(0).copied().unwrap_or(0) * 1000000 
-                      + parts.get(1).copied().unwrap_or(0) * 1000 
-                      + parts.get(2).copied().unwrap_or(0);
-        
+
+        let score = parts.first().copied().unwrap_or(0) * 1000000
+            + parts.get(1).copied().unwrap_or(0) * 1000
+            + parts.get(2).copied().unwrap_or(0);
+
         // Beta versions have lower priority than non-beta of same version
         let is_beta = v.contains("-beta");
         let beta_num = if is_beta {
-            v.split('.').last().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
+            v.split('.')
+                .next_back()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
         } else {
             999 // Non-beta is always higher than beta
         };
-        
+
         (score, beta_num)
     };
 
     let (lat_s, lat_b) = parse_ver(latest);
     let (loc_s, loc_b) = parse_ver(local);
 
-    if lat_s > loc_s { return true; }
-    if lat_s < loc_s { return false; }
+    if lat_s > loc_s {
+        return true;
+    }
+    if lat_s < loc_s {
+        return false;
+    }
     lat_b > loc_b
 }

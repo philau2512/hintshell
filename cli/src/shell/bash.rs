@@ -1,6 +1,4 @@
-use super::{
-    bin_dir_posix, cli_bin_posix, core_bin_posix, fzf_picker_args, fzf_resolve_functions,
-};
+use super::{bin_dir_posix, cli_bin_posix, core_bin_posix, fzf_picker_args, fzf_resolve_functions};
 
 /// Generate Bash hook script (compatible with macOS Bash 3.2+)
 pub fn hook_script() -> String {
@@ -28,7 +26,7 @@ pub fn hook_script() -> String {
         // Multi-line buffer: do not open picker over continuation lines
         "    case \"$typed\" in *$'\\n'*|*$'\\r'*) return ;; esac\n".to_string(),
         "    local suggestions\n".to_string(),
-        "    suggestions=$(\"$HINTSHELL_BIN\" suggest \"$typed\" --limit 10 --format fzf 2>/dev/null)\n"
+        "    suggestions=$(\"$HINTSHELL_BIN\" suggest \"$typed\" --limit 10 --cwd \"$PWD\" --shell bash --format fzf 2>/dev/null)\n"
             .to_string(),
         "    [[ -z \"$suggestions\" ]] && return\n".to_string(),
         "    local count\n".to_string(),
@@ -60,7 +58,7 @@ pub fn hook_script() -> String {
         "    _hintshell_ensure_daemon\n".to_string(),
         "    local last_cmd\n".to_string(),
         "    last_cmd=$(HISTTIMEFORMAT=\"\" history 1 | sed 's/^[ ]*[0-9]*[ ]*//')\n".to_string(),
-        "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --shell bash >/dev/null 2>&1 &)\n"
+        "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --directory \"$PWD\" --shell bash >/dev/null 2>&1 &)\n"
             .to_string(),
         "}\n".to_string(),
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
@@ -85,9 +83,29 @@ if [ -x "{cli}" ]; then
   _hs_hook="$("{cli}" hook bash 2>/dev/null)" && [ -n "$_hs_hook" ] && eval "$_hs_hook"
   unset _hs_hook
 fi
+# Start the live overlay only for a normal interactive Git Bash session.
+# Set HINTSHELL_DISABLE_AUTO_BASH=1 to bypass it for one session.
+if [[ -n "${{MSYSTEM:-}}" && $- == *i* && -t 0 && -t 1 && -z "${{BASH_EXECUTION_STRING:-}}" && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
+  exec "{cli}" bash
+fi
 # End HintShell
 "#,
         bin_dir = bin_dir,
         cli = cli
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_line_autostarts_live_wrapper_with_escape_hatch() {
+        let line = install_line();
+        assert!(line.contains("HINTSHELL_DISABLE_AUTO_BASH"));
+        assert!(line.contains("BASH_EXECUTION_STRING"));
+        assert!(line.contains("HINTSHELL_LIVE_BASH"));
+        assert!(line.contains("exec \""));
+        assert!(line.contains("\" bash"));
+    }
 }

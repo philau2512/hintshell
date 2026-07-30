@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::Notify;
-use tracing::{error, info, debug, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api::protocol::*;
 use crate::engine::matcher::SuggestionEngine;
@@ -25,15 +25,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 // and then disconnecting, which releases the kernel object if it's in a broken state.
 #[cfg(windows)]
 fn delete_pipe_if_exists(pipe_name: &str) -> Result<(), String> {
-    use std::ptr;
-    use std::os::windows::ffi::OsStrExt;
     use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
 
     // Convert the pipe name to wide string
-    let wide_name: Vec<u16> = OsStr::new(pipe_name)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
+    let wide_name: Vec<u16> = OsStr::new(pipe_name).encode_wide().chain(Some(0)).collect();
 
     // Try to open the existing pipe to verify it exists and clean it up
     unsafe {
@@ -53,7 +50,10 @@ fn delete_pipe_if_exists(pipe_name: &str) -> Result<(), String> {
             Ok(())
         } else {
             // Pipe doesn't exist or can't be accessed, which is fine
-            Err(format!("Pipe not accessible: {}", std::io::Error::last_os_error()))
+            Err(format!(
+                "Pipe not accessible: {}",
+                std::io::Error::last_os_error()
+            ))
         }
     }
 }
@@ -92,7 +92,8 @@ pub struct HintShellServer {
 
 impl HintShellServer {
     pub fn new(db_path: &PathBuf) -> Result<Self, String> {
-        let store = HistoryStore::new(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+        let store =
+            HistoryStore::new(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
         let engine = Arc::new(SuggestionEngine::new(store));
 
         // Seed default commands (runtime file > embedded fallback)
@@ -112,7 +113,7 @@ impl HintShellServer {
 
     /// Load default-commands.json at runtime.
     /// Search order: next to DB, ~/.hintshell/, next to binary, embedded fallback.
-    fn load_defaults_json(db_path: &PathBuf) -> String {
+    fn load_defaults_json(db_path: &Path) -> String {
         // Embedded fallback (always available)
         const EMBEDDED: &str = include_str!("../../default-commands.json");
         let filename = "default-commands.json";
@@ -183,7 +184,10 @@ impl HintShellServer {
                     return Ok(());
                 }
                 // Stale/broken pipe: try one cleanup then retry as first instance
-                warn!("Failed to create first pipe instance: {}; cleanup + retry", e);
+                warn!(
+                    "Failed to create first pipe instance: {}; cleanup + retry",
+                    e
+                );
                 let _ = delete_pipe_if_exists(PIPE_NAME);
                 tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 ServerOptions::new()
@@ -240,8 +244,8 @@ impl HintShellServer {
 
     #[cfg(unix)]
     pub async fn run(&self) -> Result<(), String> {
-        use tokio::net::UnixListener;
         use std::fs;
+        use tokio::net::UnixListener;
 
         info!("HintShell Daemon v{} starting on {}", VERSION, SOCKET_PATH);
 
@@ -273,10 +277,12 @@ impl HintShellServer {
         let mut line = String::new();
 
         match reader.read_line(&mut line).await {
-            Ok(0) => return,
+            Ok(0) => {}
             Ok(_) => {
                 let trimmed = line.trim();
-                if trimmed.is_empty() { return; }
+                if trimmed.is_empty() {
+                    return;
+                }
 
                 let response = match serde_json::from_str::<HintShellRequest>(trimmed) {
                     Ok(request) => {
@@ -311,8 +317,14 @@ fn process_request(
     shutdown: &Notify,
 ) -> HintShellResponse {
     match request {
-        HintShellRequest::Suggest { input, limit } => {
-            let suggestions = engine.suggest(&input, limit);
+        HintShellRequest::Suggest {
+            input,
+            limit,
+            cwd,
+            shell,
+        } => {
+            let suggestions =
+                engine.suggest_with_context(&input, limit, cwd.as_deref(), shell.as_deref());
             let items: Vec<SuggestionItem> = suggestions
                 .into_iter()
                 .map(|s| SuggestionItem {
@@ -356,3 +368,35 @@ fn process_request(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggest_request_returns_contextual_path_candidate() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("src")).unwrap();
+        let engine = SuggestionEngine::new(HistoryStore::in_memory().unwrap());
+        let shutdown = Notify::new();
+
+        let response = process_request(
+            HintShellRequest::Suggest {
+                input: "cd s".to_string(),
+                limit: 5,
+                cwd: Some(directory.path().to_string_lossy().to_string()),
+                shell: Some("bash".to_string()),
+            },
+            &engine,
+            Instant::now(),
+            &shutdown,
+        );
+
+        let suggestion = response
+            .suggestions
+            .unwrap()
+            .into_iter()
+            .find(|item| item.command == "cd src/")
+            .unwrap();
+        assert_eq!(suggestion.source, "path");
+    }
+}

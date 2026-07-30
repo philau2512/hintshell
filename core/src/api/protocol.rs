@@ -10,6 +10,10 @@ pub enum HintShellRequest {
         input: String,
         #[serde(default = "default_limit")]
         limit: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
     },
 
     /// Record a command that was just executed.
@@ -109,10 +113,14 @@ mod tests {
         let req = HintShellRequest::Suggest {
             input: "git c".to_string(),
             limit: 5,
+            cwd: Some("/workspace/hintshell".to_string()),
+            shell: Some("bash".to_string()),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("suggest"));
         assert!(json.contains("git c"));
+        assert!(json.contains("/workspace/hintshell"));
+        assert!(json.contains("bash"));
     }
 
     #[test]
@@ -120,9 +128,29 @@ mod tests {
         let json = r#"{"action":"suggest","input":"git c","limit":5}"#;
         let req: HintShellRequest = serde_json::from_str(json).unwrap();
         match req {
-            HintShellRequest::Suggest { input, limit } => {
+            HintShellRequest::Suggest {
+                input,
+                limit,
+                cwd,
+                shell,
+            } => {
                 assert_eq!(input, "git c");
                 assert_eq!(limit, 5);
+                assert!(cwd.is_none());
+                assert!(shell.is_none());
+            }
+            _ => panic!("Expected Suggest variant"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_legacy_suggest_request_without_context() {
+        let json = r#"{"action":"suggest","input":"git c","limit":5}"#;
+        let req: HintShellRequest = serde_json::from_str(json).unwrap();
+        match req {
+            HintShellRequest::Suggest { cwd, shell, .. } => {
+                assert!(cwd.is_none());
+                assert!(shell.is_none());
             }
             _ => panic!("Expected Suggest variant"),
         }
@@ -130,15 +158,13 @@ mod tests {
 
     #[test]
     fn test_serialize_response() {
-        let resp = HintShellResponse::ok_suggestions(vec![
-            SuggestionItem {
-                command: "git commit".to_string(),
-                description: None,
-                score: 95.0,
-                frequency: 10,
-                source: "user".to_string(),
-            },
-        ]);
+        let resp = HintShellResponse::ok_suggestions(vec![SuggestionItem {
+            command: "git commit".to_string(),
+            description: None,
+            score: 95.0,
+            frequency: 10,
+            source: "user".to_string(),
+        }]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("git commit"));
         assert!(!json.contains("error"));
@@ -146,10 +172,15 @@ mod tests {
 
     #[test]
     fn test_add_command_request() {
-        let json = r#"{"action":"add","command":"git push","directory":"/home/user","shell":"bash"}"#;
+        let json =
+            r#"{"action":"add","command":"git push","directory":"/home/user","shell":"bash"}"#;
         let req: HintShellRequest = serde_json::from_str(json).unwrap();
         match req {
-            HintShellRequest::AddCommand { command, directory, shell } => {
+            HintShellRequest::AddCommand {
+                command,
+                directory,
+                shell,
+            } => {
                 assert_eq!(command, "git push");
                 assert_eq!(directory.unwrap(), "/home/user");
                 assert_eq!(shell.unwrap(), "bash");
