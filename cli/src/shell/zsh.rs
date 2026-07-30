@@ -61,8 +61,8 @@ pub fn hook_script() -> String {
         "}\n".to_string(),
         "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),
         "if [[ -n \"${HINTSHELL_LIVE_ZSH:-}\" ]]; then\n".to_string(),
-        "    _hintshell_emit_cwd() { printf '\\036HINTSHELL_CWD:%s\\037' \"$PWD\"; }\n".to_string(),
-        "    precmd_functions=(${precmd_functions:#_hintshell_emit_cwd} _hintshell_emit_cwd)\nfi\n".to_string(),
+        "    _hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
+        "    precmd_functions=(${precmd_functions:#_hintshell_emit_prompt} _hintshell_emit_prompt)\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
         "_hintshell_ensure_daemon\n".to_string(),
     ]
@@ -116,6 +116,6 @@ mod tests {
     fn hook_skips_fzf_widget_inside_live_zsh() {
         let hook = hook_script();
         assert!(hook.contains("HINTSHELL_LIVE_ZSH"));
-        assert!(hook.contains("_hintshell_emit_cwd"));
+        assert!(hook.contains("_hintshell_emit_prompt"));
     }
 }

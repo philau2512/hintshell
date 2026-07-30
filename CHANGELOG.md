@@ -2,6 +2,11 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.5] - 2026-03-14
+
+### Bug Fixes
+- **Interactive TTY passthrough**: The Unix live wrapper now forwards raw terminal input while a command runs and restores the overlay at the next prompt. Interactive programs such as `gh auth login`, `fzf`, editors, and password prompts can receive their native key input.
+
 ## [0.3.4] - 2026-07-30
 
 ### New Features

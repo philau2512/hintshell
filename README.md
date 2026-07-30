@@ -120,6 +120,7 @@ hs init
 Open a new terminal after initialization. The wrapper starts the same shell as a child through the Unix pseudo-terminal backend. It preserves the opening directory and synchronizes the current directory after each prompt, so contextual suggestions follow `cd` changes.
 
 - **Tab** keeps native Bash/Zsh path and flag completion authoritative; HintShell accepts only compatible command-prefix suggestions.
+- **Interactive programs** such as `gh auth login`, `fzf`, `vim`, and `nano` receive raw terminal input while running; the overlay resumes automatically at the next prompt.
 - **Bash escape hatch:** `HINTSHELL_DISABLE_AUTO_BASH=1 bash`
 - **Zsh escape hatch:** `HINTSHELL_DISABLE_AUTO_ZSH=1 zsh`
 - Run `hs uninstall` to remove both the shell hook and the managed Bash login block.

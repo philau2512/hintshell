@@ -7,7 +7,11 @@ use std::thread;
 use std::time::Duration;
 
 use crossterm::cursor::position;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
+use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use hintshell_core::api::protocol::{HintShellRequest, SuggestionItem};
 
@@ -55,6 +59,13 @@ enum TabAction {
     ForwardToBash,
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnixInputMode {
+    PromptOverlay,
+    ChildPassthrough,
+}
+
 #[derive(Debug, Clone)]
 struct OverlayState {
     buffer: String,
@@ -87,17 +98,41 @@ impl OverlayState {
     }
 }
 
-struct RawModeGuard;
+struct RawModeGuard {
+    bracketed_paste_enabled: bool,
+}
 
 impl RawModeGuard {
     fn enter() -> Result<Self, String> {
         enable_raw_mode().map_err(|error| format!("cannot enable raw terminal mode: {error}"))?;
-        Ok(Self)
+        let mut guard = Self {
+            bracketed_paste_enabled: false,
+        };
+        guard.enable_bracketed_paste()?;
+        Ok(guard)
+    }
+
+    fn enable_bracketed_paste(&mut self) -> Result<(), String> {
+        if self.bracketed_paste_enabled {
+            return Ok(());
+        }
+        execute!(io::stdout(), EnableBracketedPaste)
+            .map_err(|error| format!("cannot enable bracketed paste: {error}"))?;
+        self.bracketed_paste_enabled = true;
+        Ok(())
+    }
+
+    fn disable_bracketed_paste(&mut self) {
+        if self.bracketed_paste_enabled {
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
+            self.bracketed_paste_enabled = false;
+        }
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        self.disable_bracketed_paste();
         let _ = disable_raw_mode();
     }
 }
@@ -193,6 +228,9 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                         .map_err(|error| format!("cannot resize Git Bash terminal: {error}"))?;
                     render_overlay(&mut state, &output)?;
                 }
+                Event::Paste(text) => {
+                    handle_paste(text, &mut state, &writer, &output)?;
+                }
                 Event::Key(key) if accepts_key_event(&key) => {
                     handle_key(key, &mut state, &writer, &output, &query_tx)?;
                 }
@@ -284,53 +322,79 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
     start_query_worker(query_rx, result_tx, query_cwd, shell.request_shell());
 
-    let _raw_mode = RawModeGuard::enter()?;
+    let mut raw_mode = RawModeGuard::enter()?;
     let mut state = OverlayState::new();
+    let mut input_mode = UnixInputMode::ChildPassthrough;
     let mut running = true;
 
     while running {
         while let Ok(shell_event) = shell_events_rx.try_recv() {
-            clear_overlay(&mut state, &output)?;
             match shell_event {
                 ShellEvent::Output(bytes) => write_terminal(&output, &bytes)?,
+                ShellEvent::PromptReady => {
+                    raw_mode.enable_bracketed_paste()?;
+                    input_mode = UnixInputMode::PromptOverlay;
+                    state.clear();
+                    state.buffer.clear();
+                    state.tracking_valid = true;
+                    state.generation = state.generation.wrapping_add(1);
+                }
                 ShellEvent::Closed => running = false,
             }
         }
-        while let Ok(result) = result_rx.try_recv() {
-            if result.generation == state.generation && result.buffer == state.buffer {
-                clear_overlay(&mut state, &output)?;
-                state.suggestions = result.suggestions;
-                state.selected = 0;
-                render_overlay(&mut state, &output)?;
+        if input_mode == UnixInputMode::PromptOverlay {
+            while let Ok(result) = result_rx.try_recv() {
+                if result.generation == state.generation && result.buffer == state.buffer {
+                    clear_overlay(&mut state, &output)?;
+                    state.suggestions = result.suggestions;
+                    state.selected = 0;
+                    render_overlay(&mut state, &output)?;
+                }
             }
         }
 
-        if event::poll(Duration::from_millis(12)).map_err(|error| error.to_string())? {
-            match event::read().map_err(|error| error.to_string())? {
-                Event::Resize(columns, rows) => {
-                    clear_overlay(&mut state, &output)?;
-                    pair.master
-                        .resize(PtySize {
-                            rows,
-                            cols: columns,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        })
-                        .map_err(|error| {
-                            format!("cannot resize {} terminal: {error}", shell.display_name())
-                        })?;
-                    render_overlay(&mut state, &output)?;
+        match input_mode {
+            UnixInputMode::PromptOverlay => {
+                if event::poll(Duration::from_millis(12)).map_err(|error| error.to_string())? {
+                    match event::read().map_err(|error| error.to_string())? {
+                        Event::Resize(columns, rows) => {
+                            clear_overlay(&mut state, &output)?;
+                            pair.master
+                                .resize(PtySize {
+                                    rows,
+                                    cols: columns,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                })
+                                .map_err(|error| {
+                                    format!("cannot resize {} terminal: {error}", shell.display_name())
+                                })?;
+                            render_overlay(&mut state, &output)?;
+                        }
+                        Event::Paste(text) => {
+                            handle_paste(text, &mut state, &writer, &output)?;
+                        }
+                        Event::Key(key) if accepts_key_event(&key) => {
+                            let submitted = key.code == KeyCode::Enter;
+                            handle_key(key, &mut state, &writer, &output, &query_tx)?;
+                            if submitted {
+                                raw_mode.disable_bracketed_paste();
+                                input_mode = UnixInputMode::ChildPassthrough;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                Event::Key(key) if accepts_key_event(&key) => {
-                    handle_key(key, &mut state, &writer, &output, &query_tx)?;
-                }
-                _ => {}
+            }
+            UnixInputMode::ChildPassthrough => {
+                forward_stdin_to_shell(&writer)?;
+                thread::sleep(Duration::from_millis(4));
             }
         }
 
         if process
             .try_wait()
-            .map_err(|error| format!("cannot check WSL Bash: {error}"))?
+            .map_err(|error| format!("cannot check Unix shell: {error}"))?
             .is_some()
         {
             clear_overlay(&mut state, &output)?;
@@ -352,6 +416,7 @@ fn run_unix_batch_process(
     loop {
         match events.recv_timeout(Duration::from_millis(20)) {
             Ok(ShellEvent::Output(bytes)) => write_terminal(output, &bytes)?,
+            Ok(ShellEvent::PromptReady) => {}
             Ok(ShellEvent::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout)
                 if process
@@ -409,6 +474,7 @@ fn run_batch_process(
     loop {
         match events.recv_timeout(Duration::from_millis(20)) {
             Ok(ShellEvent::Output(bytes)) => write_terminal(output, &bytes)?,
+            Ok(ShellEvent::PromptReady) => {}
             Ok(ShellEvent::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) if !process.is_alive() => {
                 while let Ok(ShellEvent::Output(bytes)) = events.try_recv() {
@@ -480,6 +546,7 @@ fn resolve_bash() -> Result<String, String> {
 #[derive(Debug)]
 enum ShellEvent {
     Output(Vec<u8>),
+    PromptReady,
     Closed,
 }
 
@@ -487,6 +554,8 @@ enum ShellEvent {
 const CWD_MARKER_START: &[u8] = b"\x1eHINTSHELL_CWD:";
 #[cfg(unix)]
 const CWD_MARKER_END: u8 = b'\x1f';
+#[cfg(unix)]
+const PROMPT_MARKER: &[u8] = b"\x1eHINTSHELL_PROMPT\x1f";
 
 fn start_output_pump(
     mut reader: Box<dyn Read + Send>,
@@ -495,17 +564,26 @@ fn start_output_pump(
 ) {
     #[cfg(not(unix))]
     let _ = &cwd;
+    #[cfg(unix)]
+    let mut prompt_marker_buffer = Vec::new();
+    #[cfg(unix)]
+    let mut cwd_marker_buffer = Vec::new();
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
-        #[cfg(unix)]
-        let mut marker_buffer = Vec::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
                     #[cfg(unix)]
-                    let bytes =
-                        filter_cwd_markers(&buffer[..read], &mut marker_buffer, cwd.as_ref());
+                    let bytes = filter_cwd_markers(
+                        &filter_prompt_markers(
+                            &buffer[..read],
+                            &mut prompt_marker_buffer,
+                            &events,
+                        ),
+                        &mut cwd_marker_buffer,
+                        cwd.as_ref(),
+                    );
                     #[cfg(not(unix))]
                     let bytes = buffer[..read].to_vec();
                     if !bytes.is_empty() && events.send(ShellEvent::Output(bytes)).is_err() {
@@ -515,11 +593,53 @@ fn start_output_pump(
             }
         }
         #[cfg(unix)]
-        if !marker_buffer.is_empty() {
-            let _ = events.send(ShellEvent::Output(marker_buffer));
+        if !prompt_marker_buffer.is_empty() {
+            let _ = events.send(ShellEvent::Output(prompt_marker_buffer));
+        }
+        #[cfg(unix)]
+        if !cwd_marker_buffer.is_empty() {
+            let _ = events.send(ShellEvent::Output(cwd_marker_buffer));
         }
         let _ = events.send(ShellEvent::Closed);
     });
+}
+
+#[cfg(unix)]
+fn filter_prompt_markers(
+    bytes: &[u8],
+    pending: &mut Vec<u8>,
+    events: &mpsc::Sender<ShellEvent>,
+) -> Vec<u8> {
+    pending.extend_from_slice(bytes);
+    let mut output = Vec::new();
+
+    loop {
+        let Some(start) = pending
+            .windows(PROMPT_MARKER.len())
+            .position(|window| window == PROMPT_MARKER)
+        else {
+            let keep = marker_prefix_len(pending, PROMPT_MARKER);
+            let flush = pending.len().saturating_sub(keep);
+            output.extend_from_slice(&pending[..flush]);
+            pending.drain(..flush);
+            break;
+        };
+
+        output.extend_from_slice(&pending[..start]);
+        pending.drain(..start + PROMPT_MARKER.len());
+        let _ = events.send(ShellEvent::PromptReady);
+    }
+
+    output
+}
+
+#[cfg(unix)]
+fn marker_prefix_len(pending: &[u8], marker: &[u8]) -> usize {
+    let max_prefix = pending.len().min(marker.len().saturating_sub(1));
+    (1..=max_prefix)
+        .rev()
+        .find(|length| pending[pending.len() - length..] == marker[..*length])
+        .unwrap_or(0)
 }
 
 #[cfg(unix)]
@@ -645,6 +765,19 @@ fn start_query_worker(
     });
 }
 
+fn handle_paste(
+    text: String,
+    state: &mut OverlayState,
+    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
+    output: &Arc<Mutex<io::Stdout>>,
+) -> Result<(), String> {
+    clear_overlay(state, output)?;
+    state.clear();
+    state.tracking_valid = false;
+    state.generation = state.generation.wrapping_add(1);
+    write_to_shell(writer, text.as_bytes())
+}
+
 fn handle_key(
     key: KeyEvent,
     state: &mut OverlayState,
@@ -754,6 +887,32 @@ fn forward_and_invalidate(
     state.tracking_valid = false;
     state.generation = state.generation.wrapping_add(1);
     write_to_shell(writer, bytes)
+}
+
+fn forward_stdin_to_shell(writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+
+    let mut ready = libc::pollfd {
+        fd: io::stdin().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut ready, 1, 0) };
+    if result < 0 {
+        return Err(format!("cannot poll terminal input: {}", io::Error::last_os_error()));
+    }
+    if result == 0 || ready.revents & libc::POLLIN == 0 {
+        return Ok(());
+    }
+
+    let mut buffer = [0_u8; 4096];
+    let read = io::stdin()
+        .read(&mut buffer)
+        .map_err(|error| format!("cannot read terminal input: {error}"))?;
+    if read == 0 {
+        return Ok(());
+    }
+    write_to_shell(writer, &buffer[..read])
 }
 
 fn write_to_shell(writer: &Arc<Mutex<Box<dyn Write + Send>>>, bytes: &[u8]) -> Result<(), String> {
@@ -1023,6 +1182,32 @@ mod tests {
         assert!(first.is_empty());
         assert!(second.is_empty());
         assert_eq!(*cwd.lock().unwrap(), Some("/tmp/project".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompt_marker_resumes_overlay_without_rendering() {
+        let (events, received) = mpsc::channel();
+        let mut pending = Vec::new();
+        let first = filter_prompt_markers(b"before\x1eHINTSHELL_", &mut pending, &events);
+        let second = filter_prompt_markers(b"PROMPT\x1fafter", &mut pending, &events);
+
+        assert_eq!(first, b"before");
+        assert_eq!(second, b"after");
+        assert!(matches!(received.try_recv(), Ok(ShellEvent::PromptReady)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompt_marker_can_span_output_reads() {
+        let (events, received) = mpsc::channel();
+        let mut pending = Vec::new();
+        let first = filter_prompt_markers(b"\x1eHINTSHELL_PROM", &mut pending, &events);
+        let second = filter_prompt_markers(b"PT\x1f", &mut pending, &events);
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert!(matches!(received.try_recv(), Ok(ShellEvent::PromptReady)));
     }
 
     #[test]

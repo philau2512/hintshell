@@ -64,8 +64,8 @@ pub fn hook_script() -> String {
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
             .to_string(),
         "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" ]]; then\n".to_string(),
-        "_hintshell_emit_cwd() { printf '\\036HINTSHELL_CWD:%s\\037' \"$PWD\"; }\n".to_string(),
-        "PROMPT_COMMAND=\"_hintshell_emit_cwd;$PROMPT_COMMAND\"\nfi\n".to_string(),
+        "_hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
+        "PROMPT_COMMAND=\"_hintshell_emit_prompt;$PROMPT_COMMAND\"\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
         "_hintshell_ensure_daemon\n".to_string(),
     ]
