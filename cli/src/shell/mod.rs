@@ -234,6 +234,9 @@ impl Shell {
 
         let new_content = replace_init_block(&content, &init_line);
         fs::write(&config, new_content).map_err(|e| e.to_string())?;
+        if matches!(self, Self::Bash) {
+            install_macos_bash_login_source()?;
+        }
         Ok(())
     }
 
@@ -277,6 +280,9 @@ impl Shell {
             let mut new_content = content;
             new_content.replace_range(start_of_block..end_of_block, "");
             fs::write(&config, new_content).map_err(|e| e.to_string())?;
+            if matches!(self, Self::Bash) {
+                uninstall_macos_bash_login_source()?;
+            }
             Ok(())
         } else {
             Ok(()) // Already uninstalled or not found
@@ -285,17 +291,23 @@ impl Shell {
 }
 
 fn replace_init_block(content: &str, init_line: &str) -> String {
-    const MARKER: &str = "# HintShell Initialization";
-    const END_MARKER: &str = "# End HintShell";
+    replace_managed_block(
+        content,
+        "# HintShell Initialization",
+        "# End HintShell",
+        init_line,
+    )
+}
 
-    let Some(start) = content.find(MARKER) else {
-        return format!("{content}{init_line}");
+fn replace_managed_block(content: &str, marker: &str, end_marker: &str, block: &str) -> String {
+    let Some(start) = content.find(marker) else {
+        return format!("{content}{block}");
     };
     let line_start = content[..start].rfind('\n').map_or(0, |index| index + 1);
     let end = content[start..]
-        .find(END_MARKER)
+        .find(end_marker)
         .map(|offset| {
-            let end = start + offset + END_MARKER.len();
+            let end = start + offset + end_marker.len();
             if content.as_bytes().get(end) == Some(&b'\n') {
                 end + 1
             } else {
@@ -304,7 +316,86 @@ fn replace_init_block(content: &str, init_line: &str) -> String {
         })
         .unwrap_or(content.len());
 
-    format!("{}{}{}", &content[..line_start], init_line, &content[end..])
+    format!("{}{}{}", &content[..line_start], block, &content[end..])
+}
+
+fn remove_managed_block(content: &str, marker: &str, end_marker: &str) -> String {
+    let Some(start) = content.find(marker) else {
+        return content.to_string();
+    };
+    let line_start = content[..start].rfind('\n').map_or(0, |index| index + 1);
+    let end = content[start..]
+        .find(end_marker)
+        .map(|offset| {
+            let end = start + offset + end_marker.len();
+            if content.as_bytes().get(end) == Some(&b'\n') {
+                end + 1
+            } else {
+                end
+            }
+        })
+        .unwrap_or(content.len());
+
+    format!("{}{}", &content[..line_start], &content[end..])
+}
+
+const BASH_LOGIN_MARKER: &str = "# HintShell Bash Login Initialization";
+const BASH_LOGIN_END_MARKER: &str = "# End HintShell Bash Login";
+
+fn macos_bash_login_source_block() -> &'static str {
+    r#"
+# HintShell Bash Login Initialization
+# macOS starts Bash as a login shell, which does not read ~/.bashrc by default.
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+# End HintShell Bash Login
+"#
+}
+
+fn install_macos_bash_login_source() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
+    let profile = dirs::home_dir()
+        .ok_or("Could not find home directory")?
+        .join(".bash_profile");
+    let content = if profile.exists() {
+        fs::read_to_string(&profile).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let legacy_block = r#"
+# Load interactive settings, including HintShell's macOS live overlay.
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+"#;
+    let content = content.replace(legacy_block, "");
+    let updated = replace_managed_block(
+        &content,
+        BASH_LOGIN_MARKER,
+        BASH_LOGIN_END_MARKER,
+        macos_bash_login_source_block(),
+    );
+    fs::write(profile, updated).map_err(|e| e.to_string())
+}
+
+fn uninstall_macos_bash_login_source() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
+    let profile = dirs::home_dir()
+        .ok_or("Could not find home directory")?
+        .join(".bash_profile");
+    if !profile.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&profile).map_err(|e| e.to_string())?;
+    let updated = remove_managed_block(&content, BASH_LOGIN_MARKER, BASH_LOGIN_END_MARKER);
+    fs::write(profile, updated).map_err(|e| e.to_string())
 }
 
 pub fn uninstall_assets() -> Result<(), String> {
@@ -595,5 +686,37 @@ mod tests {
             updated,
             "before\n# HintShell Initialization\nnew\n# End HintShell\nafter\n"
         );
+    }
+
+    #[test]
+    fn replace_managed_block_preserves_surrounding_content() {
+        let updated = replace_managed_block("before\n", "# Start", "# End", "# Start\nnew\n# End\n");
+        assert_eq!(updated, "before\n# Start\nnew\n# End\n");
+
+        let replaced = replace_managed_block(
+            "before\n# Start\nold\n# End\nafter\n",
+            "# Start",
+            "# End",
+            "# Start\nnew\n# End\n",
+        );
+        assert_eq!(replaced, "before\n# Start\nnew\n# End\nafter\n");
+    }
+
+    #[test]
+    fn remove_managed_block_preserves_surrounding_content() {
+        let updated = remove_managed_block(
+            "before\n# Start\nmanaged\n# End\nafter\n",
+            "# Start",
+            "# End",
+        );
+        assert_eq!(updated, "before\nafter\n");
+    }
+
+    #[test]
+    fn macos_bash_login_block_sources_bashrc() {
+        let block = macos_bash_login_source_block();
+        assert!(block.contains(BASH_LOGIN_MARKER));
+        assert!(block.contains(". \"$HOME/.bashrc\""));
+        assert!(block.contains(BASH_LOGIN_END_MARKER));
     }
 }

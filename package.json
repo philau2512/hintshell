@@ -1,6 +1,6 @@
 {
   "name": "hintshell",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Local, context-aware real-time command suggestions for PowerShell, Bash, and Zsh.",
   "keywords": [
     "shell-assistant",

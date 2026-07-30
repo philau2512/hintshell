@@ -23,6 +23,12 @@
 <p align="center">
   <img src="assets/image2.png" alt="HintShell contextual suggestions in Git Bash" width="860" />
 </p>
+<p align="center">
+  <img src="assets/image3.png" alt="HintShell contextual suggestions in ZSH" width="860" />
+</p>
+<p align="center">
+  <img src="assets/image4.png" alt="HintShell contextual suggestions in Bash" width="860" />
+</p>
 ---
 
 ## ⚡ Why HintShell?
@@ -103,21 +109,20 @@ HINTSHELL_DISABLE_AUTO_BASH=1 bash
 
 > **Preview limitation:** the live wrapper requires an ANSI-capable terminal. For full-screen terminal applications, bypass the wrapper and open them from a normal Bash session.
 
-### macOS Bash / Zsh live overlay (opt-in)
+### macOS Bash / Zsh live overlay
 
-macOS retains its native `Tab`/`fzf` integration by default. To opt into the live overlay for interactive Bash or Zsh sessions, add this before running `hs init`, then open a new terminal:
+On macOS, `hs init` configures the realtime overlay automatically for interactive Bash and Zsh sessions. For Bash login shells, it also adds a managed block to `~/.bash_profile` that loads `~/.bashrc`, so the overlay starts in macOS Terminal and iTerm2 without manual profile edits.
 
 ```bash
-export HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1
 hs init
 ```
 
-The wrapper starts the same shell as a child through the Unix pseudo-terminal backend. It preserves the opening directory and synchronizes the current directory after each prompt, so contextual suggestions follow `cd` changes.
+Open a new terminal after initialization. The wrapper starts the same shell as a child through the Unix pseudo-terminal backend. It preserves the opening directory and synchronizes the current directory after each prompt, so contextual suggestions follow `cd` changes.
 
 - **Tab** keeps native Bash/Zsh path and flag completion authoritative; HintShell accepts only compatible command-prefix suggestions.
 - **Bash escape hatch:** `HINTSHELL_DISABLE_AUTO_BASH=1 bash`
 - **Zsh escape hatch:** `HINTSHELL_DISABLE_AUTO_ZSH=1 zsh`
-- To roll back to the default picker, remove or unset `HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY`, run `hs init`, and start a new terminal.
+- Run `hs uninstall` to remove both the shell hook and the managed Bash login block.
 - Use an escape hatch for full-screen terminal applications or any profile whose startup plugins are not compatible with a PTY wrapper.
 
 ### Zsh / Bash (macOS/Linux)
@@ -141,11 +146,12 @@ Each request includes the current working directory and shell. HintShell merges 
 
 ---
 
-## ✨ What's new in 0.3.2
+## ✨ What's new in 0.3.4
 
-- WSL2 Bash now launches the same realtime live overlay as Git Bash while preserving the terminal's current workspace directory.
-- Git Bash remains on the Windows ConPTY backend and PowerShell behavior is unchanged.
-- Native Linux/macOS Bash continues using the existing `Tab`/`fzf` picker. See [CHANGELOG.md](./CHANGELOG.md).
+- `hs init` automatically enables the live overlay for macOS Bash and Zsh; no opt-in environment variable is required.
+- macOS Bash login sessions load `.bashrc` through a HintShell-managed block in `.bash_profile`, so the overlay works in Terminal and iTerm2.
+- `hs uninstall` removes both the shell hook and HintShell's managed Bash login block.
+- Git Bash and WSL2 retain their live-overlay backends; Linux Bash/Zsh outside WSL2 continue using Tab/fzf.
 
 ## 🔄 Updating
 

@@ -80,6 +80,10 @@ pub fn install_line() -> String {
     format!(
         r#"
 # HintShell Initialization
+# Enable the PTY-based live suggestion overlay by default on macOS.
+if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+  export HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1
+fi
 # Use POSIX path so Git Bash finds binaries before npm global shims
 export PATH="{bin_dir}:$PATH"
 if [ -x "{cli}" ]; then
@@ -103,8 +107,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_line_autostarts_live_wrapper_with_escape_hatch() {
+    fn install_line_enables_macos_live_overlay_by_default() {
         let line = install_line();
+        assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1"));
         assert!(line.contains("HINTSHELL_DISABLE_AUTO_BASH"));
         assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY"));
         assert!(line.contains("Darwin"));

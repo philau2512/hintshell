@@ -76,6 +76,10 @@ pub fn install_line() -> String {
     format!(
         r#"
 # HintShell Initialization
+# Enable the PTY-based live suggestion overlay by default on macOS.
+if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+  export HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1
+fi
 export PATH="{bin_dir}:$PATH"
 if [ -x "{cli}" ]; then
   _hs_hook="$("{cli}" hook zsh 2>/dev/null)" && [ -n "$_hs_hook" ] && eval "$_hs_hook"
@@ -98,9 +102,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_line_keeps_zsh_live_overlay_opt_in() {
+    fn install_line_enables_macos_live_overlay_by_default() {
         let line = install_line();
-        assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY"));
+        assert!(line.contains("HINTSHELL_ENABLE_MACOS_LIVE_OVERLAY=1"));
         assert!(line.contains("HINTSHELL_DISABLE_AUTO_ZSH"));
         assert!(line.contains("HINTSHELL_LIVE_ZSH"));
         assert!(line.contains("Darwin"));
