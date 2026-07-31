@@ -183,7 +183,12 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
     let output_reader = process
         .output()
         .map_err(|error| format!("cannot open Git Bash output: {error}"))?;
-    start_output_pump(Box::new(output_reader), shell_events_tx, None);
+    let query_cwd = Arc::new(Mutex::new(
+        env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string()),
+    ));
+    start_output_pump(Box::new(output_reader), shell_events_tx, Some(Arc::clone(&query_cwd)));
 
     if !interactive {
         return run_batch_process(process, shell_events_rx, &output);
@@ -191,12 +196,7 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
 
     let (query_tx, query_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
-    let query_cwd = Arc::new(Mutex::new(
-        env::current_dir()
-            .ok()
-            .map(|path| path.to_string_lossy().to_string()),
-    ));
-    start_query_worker(query_rx, result_tx, query_cwd, shell.request_shell());
+    start_query_worker(query_rx, result_tx, Arc::clone(&query_cwd), shell.request_shell());
 
     let _raw_mode = RawModeGuard::enter()?;
     let mut state = OverlayState::new();
@@ -551,11 +551,8 @@ enum ShellEvent {
     Closed,
 }
 
-#[cfg(unix)]
 const CWD_MARKER_START: &[u8] = b"\x1eHINTSHELL_CWD:";
-#[cfg(unix)]
 const CWD_MARKER_END: u8 = b'\x1f';
-#[cfg(unix)]
 const PROMPT_MARKER: &[u8] = b"\x1eHINTSHELL_PROMPT\x1f";
 
 fn start_output_pump(
@@ -563,11 +560,7 @@ fn start_output_pump(
     events: mpsc::Sender<ShellEvent>,
     cwd: Option<Arc<Mutex<Option<String>>>>,
 ) {
-    #[cfg(not(unix))]
-    let _ = &cwd;
-    #[cfg(unix)]
     let mut prompt_marker_buffer = Vec::new();
-    #[cfg(unix)]
     let mut cwd_marker_buffer = Vec::new();
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
@@ -575,7 +568,6 @@ fn start_output_pump(
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    #[cfg(unix)]
                     let bytes = filter_cwd_markers(
                         &filter_prompt_markers(
                             &buffer[..read],
@@ -585,19 +577,15 @@ fn start_output_pump(
                         &mut cwd_marker_buffer,
                         cwd.as_ref(),
                     );
-                    #[cfg(not(unix))]
-                    let bytes = buffer[..read].to_vec();
                     if !bytes.is_empty() && events.send(ShellEvent::Output(bytes)).is_err() {
                         return;
                     }
                 }
             }
         }
-        #[cfg(unix)]
         if !prompt_marker_buffer.is_empty() {
             let _ = events.send(ShellEvent::Output(prompt_marker_buffer));
         }
-        #[cfg(unix)]
         if !cwd_marker_buffer.is_empty() {
             let _ = events.send(ShellEvent::Output(cwd_marker_buffer));
         }
@@ -605,7 +593,6 @@ fn start_output_pump(
     });
 }
 
-#[cfg(unix)]
 fn filter_prompt_markers(
     bytes: &[u8],
     pending: &mut Vec<u8>,
@@ -634,7 +621,6 @@ fn filter_prompt_markers(
     output
 }
 
-#[cfg(unix)]
 fn marker_prefix_len(pending: &[u8], marker: &[u8]) -> usize {
     let max_prefix = pending.len().min(marker.len().saturating_sub(1));
     (1..=max_prefix)
@@ -643,7 +629,6 @@ fn marker_prefix_len(pending: &[u8], marker: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-#[cfg(unix)]
 fn filter_cwd_markers(
     bytes: &[u8],
     pending: &mut Vec<u8>,
@@ -1160,7 +1145,6 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn cwd_marker_updates_query_directory_without_rendering() {
         let cwd = Arc::new(Mutex::new(None));
@@ -1174,7 +1158,6 @@ mod tests {
         assert_eq!(*cwd.lock().unwrap(), Some("/tmp/workspace".to_string()));
     }
 
-    #[cfg(unix)]
     #[test]
     fn cwd_marker_can_span_output_reads() {
         let cwd = Arc::new(Mutex::new(None));
@@ -1186,7 +1169,6 @@ mod tests {
         assert_eq!(*cwd.lock().unwrap(), Some("/tmp/project".to_string()));
     }
 
-    #[cfg(unix)]
     #[test]
     fn prompt_marker_resumes_overlay_without_rendering() {
         let (events, received) = mpsc::channel();
@@ -1199,7 +1181,6 @@ mod tests {
         assert!(matches!(received.try_recv(), Ok(ShellEvent::PromptReady)));
     }
 
-    #[cfg(unix)]
     #[test]
     fn prompt_marker_can_span_output_reads() {
         let (events, received) = mpsc::channel();

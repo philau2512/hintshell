@@ -9,10 +9,16 @@
  */
 
 const https = require("https");
+const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { execSync, spawnSync } = require("child_process");
+const { fileURLToPath } = require("url");
+const { execFileSync } = require("child_process");
 const os = require("os");
+const { stopRunningDaemon } = require("./npm-stop");
+
+const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_REDIRECTS = 5;
 
 const REPO = "philau2512/hintshell";
 const VERSION = require("../package.json").version;
@@ -40,108 +46,116 @@ function getPlatformKey() {
 }
 
 function getDownloadUrl(target, ext) {
+  const overrideUrl = process.env.HINTSHELL_ASSET_URL;
+  if (overrideUrl) {
+    return overrideUrl
+      .replace("{target}", target)
+      .replace("{ext}", ext);
+  }
   return `https://github.com/${REPO}/releases/download/${TAG}/hintshell-${target}${ext}`;
 }
 
-function downloadFile(url, dest) {
+function downloadFile(url, dest, options = {}) {
+  const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+  if (new URL(url).protocol === "file:") {
+    return new Promise((resolve, reject) => {
+      fs.copyFile(fileURLToPath(url), dest, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+  const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
+
   return new Promise((resolve, reject) => {
-    const follow = (url) => {
-      https.get(url, (res) => {
+    let settled = false;
+    let activeRequest;
+    let activeFile;
+    let timeout;
+
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      activeRequest?.destroy();
+      activeFile?.destroy();
+      if (error) {
+        try {
+          fs.unlinkSync(dest);
+        } catch (_) {
+          /* no partial archive */
+        }
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+
+    const follow = (nextUrl, redirects = 0) => {
+      if (redirects > maxRedirects) {
+        finish(new Error(`Download failed: exceeded ${maxRedirects} redirects`));
+        return;
+      }
+
+      console.log(`   Fetching release asset${redirects ? ` (redirect ${redirects})` : ""}...`);
+      const transport = new URL(nextUrl).protocol === "http:" ? http : https;
+      activeRequest = transport.get(nextUrl, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          follow(res.headers.location);
+          res.resume();
+          follow(new URL(res.headers.location, nextUrl).toString(), redirects + 1);
           return;
         }
         if (res.statusCode !== 200) {
-          reject(new Error(`Download failed: HTTP ${res.statusCode} from ${url}`));
+          res.resume();
+          finish(new Error(`Download failed: HTTP ${res.statusCode} from ${nextUrl}`));
           return;
         }
-        const file = fs.createWriteStream(dest);
-        res.pipe(file);
-        file.on("finish", () => {
-          file.close();
-          resolve();
+
+        const totalBytes = Number(res.headers["content-length"] || 0);
+        let downloadedBytes = 0;
+        let lastReportedBytes = 0;
+        activeFile = fs.createWriteStream(dest);
+        res.on("data", (chunk) => {
+          downloadedBytes += chunk.length;
+          if (downloadedBytes - lastReportedBytes >= 5 * 1024 * 1024) {
+            lastReportedBytes = downloadedBytes;
+            const suffix = totalBytes
+              ? `/${Math.ceil(totalBytes / 1024 / 1024)} MB`
+              : " MB";
+            console.log(`   Downloaded ${Math.floor(downloadedBytes / 1024 / 1024)}${suffix}`);
+          }
         });
-        file.on("error", reject);
-      }).on("error", reject);
+        res.on("error", finish);
+        activeFile.on("error", finish);
+        activeFile.on("finish", () => activeFile.close(() => finish()));
+        res.pipe(activeFile);
+      });
+
+      activeRequest.on("error", finish);
+      activeRequest.setTimeout(requestTimeoutMs, () => {
+        finish(new Error(`Download timed out after ${requestTimeoutMs / 1000}s`));
+      });
     };
+
+    timeout = setTimeout(() => {
+      finish(new Error(`Download timed out after ${requestTimeoutMs / 1000}s`));
+    }, requestTimeoutMs);
     follow(url);
   });
 }
 
 function extractArchive(archivePath, destDir) {
-  if (os.platform() === "win32") {
-    // Windows 10+ has tar (bsdtar) built-in which fully supports zip files.
-    execSync(`tar -xf "${archivePath}" -C "${destDir}"`, { stdio: "inherit" });
-  } else {
-    execSync(`tar xzf "${archivePath}" -C "${destDir}"`, { stdio: "inherit" });
+  if (IS_WIN) {
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+    ].join("; ");
+    execFileSync("powershell", ["-NoProfile", "-Command", command], { stdio: "inherit" });
+    return;
   }
+
+  execFileSync("tar", ["xzf", archivePath, "-C", destDir], { stdio: "inherit" });
 }
 
 function binName(base) {
   return IS_WIN ? `${base}.exe` : base;
-}
-
-/**
- * Stop running daemon so Windows can overwrite vendor/ and ~/.hintshell binaries.
- * Best-effort: never throw.
- */
-function stopRunningDaemon(reason) {
-  console.log(`🛑 Stopping HintShell daemon (${reason})...`);
-  const home = os.homedir();
-  const candidates = [
-    path.join(home, ".hintshell", "bin", binName("hintshell")),
-    path.join(home, ".hintshell", "module", binName("hintshell")),
-    path.join(__dirname, "..", "vendor", binName("hintshell")),
-  ];
-
-  for (const cli of candidates) {
-    if (!fs.existsSync(cli)) continue;
-    try {
-      spawnSync(cli, ["stop"], {
-        encoding: "utf8",
-        timeout: 8000,
-        windowsHide: true,
-      });
-      break;
-    } catch (_) {
-      /* try next */
-    }
-  }
-
-  // Always force-kill leftovers (Windows file lock on hintshell-core.exe)
-  try {
-    if (IS_WIN) {
-      spawnSync("taskkill", ["/F", "/IM", "hintshell-core.exe"], {
-        stdio: "ignore",
-        windowsHide: true,
-        timeout: 5000,
-      });
-      spawnSync(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          "Get-Process -Name 'hintshell-core' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
-        ],
-        { stdio: "ignore", windowsHide: true, timeout: 5000 }
-      );
-    } else {
-      spawnSync("pkill", ["-f", "hintshell-core"], {
-        stdio: "ignore",
-        timeout: 5000,
-      });
-    }
-  } catch (_) {
-    /* ignore */
-  }
-
-  // Brief wait so OS releases file handles
-  const until = Date.now() + 400;
-  while (Date.now() < until) {
-    /* spin — avoid Atomics/SharedArrayBuffer quirks */
-  }
-
-  console.log("   Daemon stop attempted (IPC + force kill).");
 }
 
 function runInit(vendorDir) {
@@ -152,7 +166,7 @@ function runInit(vendorDir) {
   }
   console.log("📦 Running hintshell init (copy into ~/.hintshell + hooks)...");
   try {
-    execSync(`"${cli}" init`, { stdio: "inherit", windowsHide: true });
+    execFileSync(cli, ["init"], { stdio: "inherit", windowsHide: true });
   } catch (err) {
     console.error("⚠️  hintshell init failed. Run manually: hintshell init");
     if (err && err.message) console.error(`   ${err.message}`);
@@ -228,4 +242,8 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { downloadFile, getDownloadUrl };

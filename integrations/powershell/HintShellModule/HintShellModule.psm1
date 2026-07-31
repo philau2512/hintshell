@@ -3,7 +3,7 @@
 
 # Do NOT set global SilentlyContinue — it hides start/status failures in IDE terminals.
 $modulePath = $PSScriptRoot
-$configRoot = Join-Path $env:USERPROFILE ".hintshell"
+$configRoot = if ($env:HINTSHELL_HOME) { $env:HINTSHELL_HOME } else { Join-Path $env:USERPROFILE ".hintshell" }
 $disabledFile = Join-Path $configRoot ".disabled"
 
 # Load sub-scripts immediately

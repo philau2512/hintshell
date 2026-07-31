@@ -1,6 +1,6 @@
 {
   "name": "hintshell",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Local, context-aware real-time command suggestions for PowerShell, Bash, and Zsh.",
   "keywords": [
     "shell-assistant",
@@ -41,7 +41,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node scripts/npm-install.js"
+    "preinstall": "node scripts/npm-stop.js",
+    "postinstall": "node scripts/npm-install.js",
+    "test:installer": "node --test scripts/npm-install.test.js"
   },
   "os": [
     "win32",

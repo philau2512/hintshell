@@ -75,7 +75,8 @@ function script:Stop-HSDaemonProcesses {
 
 function script:Enter-HSStartLock {
     param([int]$TimeoutMs = 8000)
-    $lockPath = Join-Path $env:USERPROFILE '.hintshell\start.lock'
+    $configRoot = if ($env:HINTSHELL_HOME) { $env:HINTSHELL_HOME } else { Join-Path $env:USERPROFILE '.hintshell' }
+    $lockPath = Join-Path $configRoot 'start.lock'
     $dir = Split-Path -Parent $lockPath
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null

@@ -6,11 +6,22 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// ~/.hintshell/
+// Defaults to ~/.hintshell/. HINTSHELL_HOME enables isolated test installs.
 pub fn hintshell_home() -> PathBuf {
+    if let Some(home) = env::var_os("HINTSHELL_HOME") {
+        return PathBuf::from(home);
+    }
+
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".hintshell")
+}
+
+fn shell_config_home() -> PathBuf {
+    env::var_os("HINTSHELL_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Convert a Windows path to a Git Bash / MSYS path (`C:\Users\x` → `/c/Users/x`).
@@ -174,17 +185,24 @@ impl Shell {
             Self::Power => {
                 #[cfg(windows)]
                 {
-                    let docs = dirs::document_dir()?;
-                    Some(docs.join("PowerShell\\Microsoft.PowerShell_profile.ps1"))
+                    let documents = env::var_os("HINTSHELL_CONFIG_HOME")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| {
+                            dirs::document_dir()
+                                .unwrap_or_else(|| shell_config_home().join("Documents"))
+                        });
+                    Some(documents.join("PowerShell\\Microsoft.PowerShell_profile.ps1"))
                 }
                 #[cfg(unix)]
                 {
-                    let home = dirs::home_dir()?;
-                    Some(home.join(".config/powershell/Microsoft.PowerShell_profile.ps1"))
+                    Some(
+                        shell_config_home()
+                            .join(".config/powershell/Microsoft.PowerShell_profile.ps1"),
+                    )
                 }
             }
-            Self::Bash => Some(dirs::home_dir()?.join(".bashrc")),
-            Self::Zsh => Some(dirs::home_dir()?.join(".zshrc")),
+            Self::Bash => Some(shell_config_home().join(".bashrc")),
+            Self::Zsh => Some(shell_config_home().join(".zshrc")),
         }
     }
 
@@ -614,12 +632,10 @@ fn find_module_src(bin_path: &std::path::Path) -> Option<std::path::PathBuf> {
         dir = dir.parent()?.to_path_buf();
     }
 
-    // Priority C: already-installed module (re-init from ~/.hintshell/bin)
-    if let Some(home) = dirs::home_dir() {
-        let installed = home.join(".hintshell").join("module");
-        if installed.join("HintShellModule.psd1").exists() {
-            return Some(installed);
-        }
+    // Priority C: already-installed module (re-init from HINTSHELL_HOME or ~/.hintshell)
+    let installed = hintshell_home().join("module");
+    if installed.join("HintShellModule.psd1").exists() {
+        return Some(installed);
     }
 
     None
@@ -710,6 +726,32 @@ mod tests {
             "# End",
         );
         assert_eq!(updated, "before\nafter\n");
+    }
+
+    #[test]
+    fn hintshell_home_can_be_overridden_for_isolated_installation() {
+        let original = env::var_os("HINTSHELL_HOME");
+        let isolated_home = std::env::temp_dir().join("hintshell-isolated-test");
+        env::set_var("HINTSHELL_HOME", &isolated_home);
+        assert_eq!(hintshell_home(), isolated_home);
+        if let Some(original) = original {
+            env::set_var("HINTSHELL_HOME", original);
+        } else {
+            env::remove_var("HINTSHELL_HOME");
+        }
+    }
+
+    #[test]
+    fn shell_config_home_can_be_overridden_for_isolated_installation() {
+        let original = env::var_os("HINTSHELL_CONFIG_HOME");
+        let config_home = std::env::temp_dir().join("hintshell-config-test");
+        env::set_var("HINTSHELL_CONFIG_HOME", &config_home);
+        assert_eq!(shell_config_home(), config_home);
+        if let Some(original) = original {
+            env::set_var("HINTSHELL_CONFIG_HOME", original);
+        } else {
+            env::remove_var("HINTSHELL_CONFIG_HOME");
+        }
     }
 
     #[test]

@@ -2,6 +2,15 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.7] - 2026-03-14
+
+### Bug Fixes
+- **Installer lifecycle**: Stop both daemon and live wrapper before replacing binaries, use a bounded release download, and extract Windows ZIP archives with PowerShell instead of Git Bash `tar`.
+- **Isolated configuration**: Support test-specific home, shell-profile, and data paths so installer validation does not modify user configuration.
+
+### Testing
+- **Installer coverage**: Add redirect, timeout, local fixture, and isolated PowerShell/Git Bash installation validation.
+
 ## [0.3.6] - 2026-03-14
 
 ### Bug Fixes

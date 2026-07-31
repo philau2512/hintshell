@@ -257,22 +257,26 @@ async fn main() {
         Commands::Zsh { args } => run_live_shell(LiveShell::Zsh, args),
         Commands::Init => {
             println!("▶ hintshell init");
-            // Stop + force-kill so Windows can overwrite ~/.hintshell/*.exe (os error 32)
-            println!("🛑 Stopping daemon to release file locks...");
-            let shutdown_request = HintShellRequest::Shutdown;
-            match send_request(&shutdown_request).await {
-                Ok(_) => println!("   IPC shutdown: OK"),
-                Err(e) => println!("   IPC shutdown: {} (will force-kill)", e),
-            }
-            // Always force-kill after IPC (handles slow exit + zombies holding .exe locks)
-            let killed = kill_orphan_daemons();
-            if killed > 0 {
-                println!("   Force-stopped {} hintshell-core process(es).", killed);
+            if std::env::var_os("HINTSHELL_SKIP_PROCESS_CONTROL").is_some() {
+                println!("   HINTSHELL_SKIP_PROCESS_CONTROL set — skipped daemon stop.");
             } else {
-                // taskkill even when count was 0 (race: process exiting)
-                let _ = kill_orphan_daemons();
+                // Stop + force-kill so Windows can overwrite ~/.hintshell/*.exe (os error 32)
+                println!("🛑 Stopping daemon to release file locks...");
+                let shutdown_request = HintShellRequest::Shutdown;
+                match send_request(&shutdown_request).await {
+                    Ok(_) => println!("   IPC shutdown: OK"),
+                    Err(e) => println!("   IPC shutdown: {} (will force-kill)", e),
+                }
+                // Always force-kill after IPC (handles slow exit + zombies holding .exe locks)
+                let killed = kill_orphan_daemons();
+                if killed > 0 {
+                    println!("   Force-stopped {} hintshell-core process(es).", killed);
+                } else {
+                    // taskkill even when count was 0 (race: process exiting)
+                    let _ = kill_orphan_daemons();
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
             println!("🔍 Detecting shells...");
             let shells = shell::detect_shells();
@@ -308,9 +312,12 @@ async fn main() {
                 }
             }
 
-            // Auto-start daemon after init
-            println!("\n🚀 Starting daemon...");
-            start_daemon();
+            if std::env::var_os("HINTSHELL_SKIP_DAEMON_START").is_some() {
+                println!("   HINTSHELL_SKIP_DAEMON_START set — skipped daemon startup.");
+            } else {
+                println!("\n🚀 Starting daemon...");
+                start_daemon();
+            }
             println!("✅ hintshell init complete. Restart shell or re-import module if needed.");
         }
         Commands::Hook { shell } => {
@@ -499,7 +506,7 @@ fn start_daemon() {
     }
 }
 
-/// Resolve hintshell-core binary: sibling of CLI → ~/.hintshell/bin → ~/.hintshell/module
+/// Resolve hintshell-core binary: sibling of CLI → HINTSHELL_HOME/bin → HINTSHELL_HOME/module
 fn resolve_core_path() -> std::path::PathBuf {
     let core_name = if cfg!(windows) {
         "hintshell-core.exe"
@@ -516,19 +523,16 @@ fn resolve_core_path() -> std::path::PathBuf {
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
-        let bin = home.join(".hintshell").join("bin").join(core_name);
-        if bin.exists() {
-            return bin;
-        }
-        let module = home.join(".hintshell").join("module").join(core_name);
-        if module.exists() {
-            return module;
-        }
+    let home = shell::hintshell_home();
+    let bin = home.join("bin").join(core_name);
+    if bin.exists() {
         return bin;
     }
-
-    core_name.into()
+    let module = home.join("module").join(core_name);
+    if module.exists() {
+        return module;
+    }
+    bin
 }
 
 /// True if status IPC succeeds.

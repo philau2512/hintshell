@@ -6,6 +6,12 @@ use tracing::{error, info};
 use hintshell_core::api::server::HintShellServer;
 
 fn get_db_path() -> PathBuf {
+    if let Some(data_home) = std::env::var_os("HINTSHELL_DATA_HOME") {
+        let data_dir = PathBuf::from(data_home);
+        std::fs::create_dir_all(&data_dir).ok();
+        return data_dir.join("history.db");
+    }
+
     let old_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ShellMind");

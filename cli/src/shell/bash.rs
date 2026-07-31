@@ -13,6 +13,7 @@ pub fn hook_script() -> String {
         fzf_resolve_functions(),
         // Auto-start daemon if not running
         "\n_hintshell_ensure_daemon() {\n".to_string(),
+        "    [[ -n \"${HINTSHELL_SKIP_DAEMON_START:-}\" ]] && return\n".to_string(),
         "    \"$HINTSHELL_BIN\" status >/dev/null 2>&1 && return\n".to_string(),
         "    [[ -x \"$HINTSHELL_CORE\" ]] && (\"$HINTSHELL_CORE\" >/dev/null 2>&1 &)\n".to_string(),
         "    sleep 0.2\n".to_string(),
@@ -63,7 +64,7 @@ pub fn hook_script() -> String {
         "}\n".to_string(),
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
             .to_string(),
-        "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" ]]; then\n".to_string(),
+        "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}\" ]]; then\n".to_string(),
         "_hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
         "PROMPT_COMMAND=\"_hintshell_emit_prompt;$PROMPT_COMMAND\"\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
@@ -105,6 +106,12 @@ fi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_bash_hook_skips_prompt_markers_in_git_bash() {
+        let hook = hook_script();
+        assert!(hook.contains("HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}"));
+    }
 
     #[test]
     fn install_line_enables_macos_live_overlay_by_default() {

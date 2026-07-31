@@ -65,6 +65,10 @@ HintShell uses `fzf` to render the suggestion picker on Bash/Zsh (including **Gi
 Install via NPM to get the latest pre-built binaries for your platform:
 ```bash
 npm install -g hintshell@latest
+
+or
+
+npm i -g hintshell@latest --foreground-scripts
 ```
 
 ### 3. Initialize Shell Integration
