@@ -47,11 +47,10 @@ function stopRunningDaemon(reason) {
 
   if (IS_WIN) {
     run("taskkill", ["/F", "/IM", "hintshell-core.exe"]);
-    run("taskkill", ["/F", "/IM", "hintshell.exe"]);
     run("powershell", [
       "-NoProfile",
       "-Command",
-      "Get-Process -Name 'hintshell', 'hintshell-core' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+      "Get-CimInstance Win32_Process -Filter \"Name = 'hintshell.exe'\" | Where-Object { $_.CommandLine -match '\\s+bash(?:\\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
     ]);
   } else {
     run("pkill", ["-f", "hintshell-core"]);

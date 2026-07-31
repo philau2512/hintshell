@@ -57,7 +57,13 @@ function getDownloadUrl(target, ext) {
 
 function downloadFile(url, dest, options = {}) {
   const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
-  if (new URL(url).protocol === "file:") {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return Promise.reject(new Error(`Download failed: invalid URL ${url}`));
+  }
+  if (parsedUrl.protocol === "file:") {
     return new Promise((resolve, reject) => {
       fs.copyFile(fileURLToPath(url), dest, (error) => (error ? reject(error) : resolve()));
     });

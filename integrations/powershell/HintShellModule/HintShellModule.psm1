@@ -378,32 +378,18 @@ function Invoke-HSWrapper {
                 }
                 # Do not create .disabled flag here — user wants update, not disable
 
-                # 2. Update via npm (postinstall also stops daemon + runs init)
-                Write-Host "🔄 npm install -g hintshell@latest ..." -ForegroundColor Cyan
-                npm install -g hintshell@latest
+                # 2. npm runs `preinstall`/`postinstall` itself. Foreground scripts expose
+                # download/extract progress, while bounded retries prevent a quiet network stall.
+                Write-Host "🔄 Installing HintShell update from npm (download progress follows)..." -ForegroundColor Cyan
+                npm install -g hintshell@latest --foreground-scripts --fetch-timeout=30000 --fetch-retries=1
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "❌ npm install failed (exit $LASTEXITCODE)." -ForegroundColor Red
-                    Write-Host "   Tip: taskkill /F /IM hintshell-core.exe ; npm i -g hintshell@latest" -ForegroundColor DarkGray
+                    Write-Host "   Tip: taskkill /F /IM hintshell-core.exe ; npm i -g hintshell@latest --foreground-scripts" -ForegroundColor DarkGray
                     return
                 }
                 Write-Host "✅ npm install finished." -ForegroundColor Green
 
-                # 3. Ensure module + daemon (init may already have run in postinstall)
-                Write-Host "📦 Ensuring local install (hintshell init)..." -ForegroundColor Cyan
-                $npmVendor = Join-Path ((npm root -g) | ForEach-Object { $_ }) "hintshell\vendor"
-                $exeInit = if ([Environment]::OSVersion.Platform -eq 'Win32NT') { "hintshell.exe" } else { "hintshell" }
-                $initPath = Join-Path $npmVendor $exeInit
-                if (-not (Test-Path $initPath)) {
-                    $initPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
-                }
-
-                if ($initPath -and (Test-Path $initPath)) {
-                    & $initPath init
-                } else {
-                    Write-Host "⚠️ Could not find binary to run init. Please run 'hintshell init' manually." -ForegroundColor Yellow
-                }
-
-                # 4. Reload module from ~/.hintshell and restart UI
+                # 3. postinstall already ran `hintshell init`; only reload the new module.
                 Write-Host "🔄 Reloading module + starting daemon..." -ForegroundColor Cyan
                 $freshModule = Join-Path $configRoot "module\HintShellModule.psd1"
                 if (Test-Path $freshModule) {

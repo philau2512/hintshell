@@ -62,13 +62,9 @@ HintShell uses `fzf` to render the suggestion picker on Bash/Zsh (including **Gi
 - **Windows PowerShell**: No extra dependencies for the real-time overlay.
 
 ### 2. Install HintShell
-Install via NPM to get the latest pre-built binaries for your platform:
+Install via npm to get the latest pre-built binaries for your platform. Add `--foreground-scripts` to show the binary download, extraction, and setup output (this is also what `hs update` uses):
 ```bash
-npm install -g hintshell@latest
-
-or
-
-npm i -g hintshell@latest --foreground-scripts
+npm install -g hintshell@latest --foreground-scripts
 ```
 
 ### 3. Initialize Shell Integration

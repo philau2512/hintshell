@@ -2,6 +2,16 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.8] - 2026-03-14
+
+### Bug Fixes
+- **Windows update progress**: `hs update` runs npm lifecycle scripts in the foreground, showing release download and setup output while using bounded npm network retry and timeout settings.
+- **Safe updater shutdown**: npm lifecycle cleanup stops only the live `hintshell.exe bash` wrapper and daemon, so it does not terminate the CLI process performing the update.
+- **Update efficiency**: Remove the redundant `hintshell init` after npm postinstall, reducing the time before the daemon is restarted.
+
+### Documentation
+- **Installer visibility**: Recommend `--foreground-scripts` for manual installs so users can observe download, extraction, and setup progress.
+
 ## [0.3.7] - 2026-03-14
 
 ### Bug Fixes

@@ -18,11 +18,23 @@ function listen(handler) {
   });
 }
 
-test("Windows stop script targets the live wrapper and daemon", () => {
+test("Windows stop script stops only live wrapper processes", () => {
   const script = fs.readFileSync(path.join(__dirname, "npm-stop.js"), "utf8");
   assert.match(script, /hintshell-core\.exe/);
-  assert.match(script, /hintshell\.exe/);
-  assert.match(script, /Get-Process -Name 'hintshell', 'hintshell-core'/);
+  assert.match(script, /Name = 'hintshell\.exe'/);
+  assert.match(script, /CommandLine -match/);
+  assert.match(script, /CommandLine -match .*bash/);
+  assert.doesNotMatch(script, /taskkill", \["\/F", "\/IM", "hintshell\.exe"\]/);
+  assert.doesNotMatch(script, /Get-Process -Name 'hintshell', 'hintshell-core'/);
+});
+
+test("PowerShell update exposes npm lifecycle progress without duplicate init", () => {
+  const module = fs.readFileSync(
+    path.join(__dirname, "..", "integrations", "powershell", "HintShellModule", "HintShellModule.psm1"),
+    "utf8"
+  );
+  assert.match(module, /npm install -g hintshell@latest --foreground-scripts --fetch-timeout=30000 --fetch-retries=1/);
+  assert.doesNotMatch(module, /Ensuring local install \(hintshell init\)/);
 });
 
 test("isolated tests skip global process control", () => {
