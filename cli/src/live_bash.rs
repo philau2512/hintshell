@@ -25,8 +25,12 @@ const QUERY_DEBOUNCE: Duration = Duration::from_millis(40);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(180);
 const MAX_VISIBLE_SUGGESTIONS: usize = 6;
 
+fn trace_startup_enabled(value: Option<&str>) -> bool {
+    matches!(value, Some("1"))
+}
+
 fn trace_startup(started: Instant, phase: &str) {
-    if env::var_os("HINTSHELL_TRACE_STARTUP").is_some() {
+    if trace_startup_enabled(env::var("HINTSHELL_TRACE_STARTUP").ok().as_deref()) {
         let line = format!(
             "HintShell startup {phase}: {:.1}ms",
             started.elapsed().as_secs_f64() * 1_000.0
@@ -1199,6 +1203,15 @@ mod tests {
             frequency: 1,
             source: "history".to_string(),
         }
+    }
+
+    #[test]
+    fn startup_trace_requires_explicit_one() {
+        assert!(trace_startup_enabled(Some("1")));
+        assert!(!trace_startup_enabled(Some("0")));
+        assert!(!trace_startup_enabled(Some("true")));
+        assert!(!trace_startup_enabled(Some("")));
+        assert!(!trace_startup_enabled(None));
     }
 
     #[test]

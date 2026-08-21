@@ -93,7 +93,7 @@ PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[0m\]\n$ '
 export PATH="{bin_dir}:$PATH"
 if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
   _hintshell_trace_phase() {{
-    [[ -n "${{HINTSHELL_TRACE_STARTUP:-}}" ]] || return
+    [[ "${{HINTSHELL_TRACE_STARTUP:-}}" == "1" ]] || return
     printf '__HINTSHELL_STARTUP_PHASE__:%s__HINTSHELL_STARTUP_PHASE_END__' "$1"
   }}
   _hintshell_trace_phase 'entered live branch'
@@ -865,6 +865,7 @@ mod tests {
         assert!(content.contains("_hintshell_emit_prompt"));
         assert!(content.contains("_hintshell_live_record"));
         assert!(content.contains("_hintshell_trace_phase"));
+        assert!(content.contains("[[ \"${HINTSHELL_TRACE_STARTUP:-}\" == \"1\" ]] || return"));
         assert!(content.contains("entered live branch"));
         assert!(content.contains("configured prompt command"));
         assert!(content.contains(") > /dev/null 2>&1 & disown"));
