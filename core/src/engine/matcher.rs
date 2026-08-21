@@ -240,6 +240,36 @@ impl SuggestionEngine {
             .map_err(|e| e.to_string())
     }
 
+    pub fn prune_user_history(
+        &self,
+        retention_days: u64,
+        dry_run: bool,
+    ) -> Result<crate::storage::db::HistoryPruneResult, String> {
+        let cutoff = Utc::now()
+            - chrono::Duration::days(
+                i64::try_from(retention_days)
+                    .map_err(|_| "retention period is too large".to_string())?,
+            );
+        self.store
+            .prune_user_history(cutoff, dry_run)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn prune_user_history_daily(
+        &self,
+        retention_days: u64,
+    ) -> Result<Option<crate::storage::db::HistoryPruneResult>, String> {
+        let now = Utc::now();
+        let cutoff = now
+            - chrono::Duration::days(
+                i64::try_from(retention_days)
+                    .map_err(|_| "retention period is too large".to_string())?,
+            );
+        self.store
+            .prune_user_history_daily(now, cutoff, false)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn total_commands(&self) -> i64 {
         self.store.get_total_commands().unwrap_or(0)
     }

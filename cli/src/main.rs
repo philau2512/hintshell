@@ -82,6 +82,12 @@ enum Commands {
         shell: Option<String>,
     },
 
+    /// Manage stored command history
+    History {
+        #[command(subcommand)]
+        command: HistoryCommands,
+    },
+
     /// Run Bash with HintShell's live advisory overlay
     Bash {
         /// Pass arguments directly to Bash
@@ -114,6 +120,20 @@ enum Commands {
 
     /// Update HintShell to the latest version
     Update,
+}
+
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Remove commands older than the retention period
+    Prune {
+        /// Retain commands from the most recent number of days
+        #[arg(long, default_value_t = 90)]
+        days: u64,
+
+        /// Report the number of candidates without deleting them
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -257,6 +277,32 @@ async fn main() {
                 Err(e) => println!("❌ Cannot connect to daemon: {}", e),
             }
         }
+        Commands::History { command } => match command {
+            HistoryCommands::Prune { days, dry_run } => {
+                let request = HintShellRequest::PruneHistory { days, dry_run };
+                match send_request(&request).await {
+                    Ok(response) if response.success => {
+                        if let Some(summary) = response.history_prune {
+                            if dry_run {
+                                println!(
+                                    "🔎 {} command(s) would be removed (older than {} day(s), used fewer than 3 times).",
+                                    summary.candidate_count, days
+                                );
+                            } else {
+                                println!(
+                                    "🧹 Removed {} of {} eligible command(s) (older than {} day(s), used fewer than 3 times).",
+                                    summary.deleted_count, summary.candidate_count, days
+                                );
+                            }
+                        } else {
+                            println!("❌ Daemon responded without a history prune summary.");
+                        }
+                    }
+                    Ok(response) => println!("❌ Error: {}", response.error.unwrap_or_default()),
+                    Err(error) => println!("❌ Cannot connect to daemon: {}", error),
+                }
+            }
+        },
         Commands::Bash { args } => run_live_shell(LiveShell::Bash, args),
         Commands::Zsh { args } => run_live_shell(LiveShell::Zsh, args),
         Commands::Init { git_bash_fast } => {

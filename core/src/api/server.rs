@@ -98,6 +98,15 @@ impl HintShellServer {
             HistoryStore::new(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
         let engine = Arc::new(SuggestionEngine::new(store));
 
+        match engine.prune_user_history_daily(90) {
+            Ok(Some(result)) => info!(
+                "Pruned {} stale user history command(s) out of {} candidate(s)",
+                result.deleted, result.candidates
+            ),
+            Ok(None) => debug!("Skipped history pruning; the 24-hour cadence has not elapsed"),
+            Err(error) => error!("Failed to prune stale user history: {}", error),
+        }
+
         // Seed default commands (runtime file > embedded fallback)
         let defaults_json = Self::load_defaults_json(db_path);
         match engine.seed_defaults(&defaults_json) {
@@ -352,6 +361,19 @@ fn process_request(
             }
             Err(e) => HintShellResponse::err(&e),
         },
+
+        HintShellRequest::PruneHistory { days, dry_run } => {
+            if days == 0 {
+                return HintShellResponse::err("retention days must be at least 1");
+            }
+            match engine.prune_user_history(days, dry_run) {
+                Ok(result) => HintShellResponse::ok_history_prune(HistoryPruneSummary {
+                    candidate_count: result.candidates,
+                    deleted_count: result.deleted,
+                }),
+                Err(error) => HintShellResponse::err(&error),
+            }
+        }
 
         HintShellRequest::Status => {
             let status = DaemonStatus {

@@ -33,6 +33,12 @@ pub struct LocalHistoryStats {
     pub last_used: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryPruneResult {
+    pub candidates: i64,
+    pub deleted: i64,
+}
+
 impl HistoryStore {
     pub fn new(db_path: &PathBuf) -> SqlResult<Self> {
         let conn = Connection::open(db_path)?;
@@ -83,6 +89,11 @@ impl HistoryStore {
 
             CREATE INDEX IF NOT EXISTS idx_history_context_directory
                 ON history_context(directory, frequency DESC, last_used DESC);
+
+            CREATE TABLE IF NOT EXISTS storage_metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             ",
         )?;
 
@@ -330,9 +341,11 @@ impl HistoryStore {
                     ).map_err(|e| e.to_string())?;
                     count += 1;
                 } else {
-                    // Update descriptions for existing records that don't have one or have a different one
+                    // Keep commands listed in the default catalog permanently protected from pruning.
                     conn.execute(
-                        "UPDATE history SET description = ?1 WHERE command = ?2 AND (description IS NULL OR description != ?1)",
+                        "UPDATE history
+                         SET description = ?1, source = 'default'
+                         WHERE command = ?2 AND (source != 'default' OR description IS NULL OR description != ?1)",
                         params![desc, trimmed],
                     ).map_err(|e| e.to_string())?;
                 }
@@ -342,6 +355,96 @@ impl HistoryStore {
         conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
         Ok(count)
+    }
+
+    /// Count and optionally delete stale, low-frequency user history.
+    /// Matching context rows are removed in the same transaction as history rows.
+    pub fn prune_user_history(
+        &self,
+        cutoff: DateTime<Utc>,
+        dry_run: bool,
+    ) -> SqlResult<HistoryPruneResult> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let cutoff = cutoff.to_rfc3339();
+        let candidates: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM history
+             WHERE source = 'user' AND frequency < 3 AND last_used < ?1",
+            params![cutoff],
+            |row| row.get(0),
+        )?;
+
+        if dry_run {
+            tx.rollback()?;
+            return Ok(HistoryPruneResult {
+                candidates,
+                deleted: 0,
+            });
+        }
+
+        tx.execute(
+            "DELETE FROM history_context
+             WHERE command IN (
+                 SELECT command FROM history
+                 WHERE source = 'user' AND frequency < 3 AND last_used < ?1
+             )",
+            params![cutoff],
+        )?;
+        let deleted = tx.execute(
+            "DELETE FROM history
+             WHERE source = 'user' AND frequency < 3 AND last_used < ?1",
+            params![cutoff],
+        )? as i64;
+        tx.commit()?;
+
+        Ok(HistoryPruneResult {
+            candidates,
+            deleted,
+        })
+    }
+
+    /// Prune stale user history at most once per 24 hours.
+    /// Returns `None` when the cadence has not elapsed.
+    pub fn prune_user_history_daily(
+        &self,
+        now: DateTime<Utc>,
+        cutoff: DateTime<Utc>,
+        dry_run: bool,
+    ) -> SqlResult<Option<HistoryPruneResult>> {
+        const KEY: &str = "last_history_prune";
+        let due = {
+            let conn = self.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction()?;
+            let last: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM storage_metadata WHERE key = ?1",
+                    params![KEY],
+                    |row| row.get(0),
+                )
+                .ok();
+            let due = last
+                .as_deref()
+                .and_then(|value| value.parse::<DateTime<Utc>>().ok())
+                .map(|timestamp| now.signed_duration_since(timestamp).num_hours() >= 24)
+                .unwrap_or(true);
+            tx.rollback()?;
+            due
+        };
+
+        if !due {
+            return Ok(None);
+        }
+
+        let result = self.prune_user_history(cutoff, dry_run)?;
+        if !dry_run {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO storage_metadata (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![KEY, now.to_rfc3339()],
+            )?;
+        }
+        Ok(Some(result))
     }
 
     #[cfg(test)]
@@ -439,6 +542,78 @@ mod tests {
         let results = store.search_by_prefix("git", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source, "default");
+    }
+
+    #[test]
+    fn test_prune_user_history_preserves_defaults_and_frequent_rows() {
+        let store = HistoryStore::in_memory().unwrap();
+        let json = r#"{ "git": [{ "command": "git pull", "description": "pull changes" }] }"#;
+        store.seed_defaults(json).unwrap();
+        store.add_command("git status", None, None).unwrap();
+        for _ in 0..3 {
+            store.add_command("git log", None, None).unwrap();
+        }
+        store.set_last_used_for_test("git status", "2000-01-01T00:00:00Z");
+        store.set_last_used_for_test("git log", "2000-01-01T00:00:00Z");
+
+        let result = store
+            .prune_user_history("2020-01-01T00:00:00Z".parse().unwrap(), false)
+            .unwrap();
+        assert_eq!(result.candidates, 1);
+        assert_eq!(result.deleted, 1);
+        assert_eq!(store.search_by_prefix("git", 10).unwrap().len(), 2);
+        assert_eq!(
+            store.search_by_prefix("git pull", 10).unwrap()[0].source,
+            "default"
+        );
+    }
+
+    #[test]
+    fn test_prune_user_history_cleans_context_and_dry_run_mutates_nothing() {
+        let store = HistoryStore::in_memory().unwrap();
+        store
+            .add_command("old command", Some("C:/old"), None)
+            .unwrap();
+        store.set_last_used_for_test("old command", "2000-01-01T00:00:00Z");
+
+        let cutoff = "2020-01-01T00:00:00Z".parse().unwrap();
+        let preview = store.prune_user_history(cutoff, true).unwrap();
+        assert_eq!(
+            preview,
+            HistoryPruneResult {
+                candidates: 1,
+                deleted: 0
+            }
+        );
+        assert_eq!(store.get_total_commands().unwrap(), 1);
+        assert_eq!(store.get_local_history("C:/old").unwrap().len(), 1);
+
+        let result = store.prune_user_history(cutoff, false).unwrap();
+        assert_eq!(result.deleted, 1);
+        assert_eq!(store.get_total_commands().unwrap(), 0);
+        assert!(store.get_local_history("C:/old").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_daily_prune_persists_24_hour_cadence() {
+        let store = HistoryStore::in_memory().unwrap();
+        let now = "2024-01-02T00:00:00Z".parse().unwrap();
+        let cutoff = "2020-01-01T00:00:00Z".parse().unwrap();
+        let first = store.prune_user_history_daily(now, cutoff, true).unwrap();
+        assert!(first.is_some());
+        let second = store.prune_user_history_daily(now, cutoff, true).unwrap();
+        assert!(second.is_some());
+
+        let first = store.prune_user_history_daily(now, cutoff, false).unwrap();
+        assert!(first.is_some());
+        assert!(store
+            .prune_user_history_daily(now, cutoff, false)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .prune_user_history_daily(now + chrono::Duration::hours(24), cutoff, false)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

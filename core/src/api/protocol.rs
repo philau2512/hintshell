@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPruneSummary {
+    pub candidate_count: i64,
+    pub deleted_count: i64,
+}
+
 /// Request sent from Shell integration to HintShell Daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
@@ -24,6 +30,10 @@ pub enum HintShellRequest {
         shell: Option<String>,
     },
 
+    /// Remove stale, low-frequency user commands from history.
+    #[serde(rename = "prune_history")]
+    PruneHistory { days: u64, dry_run: bool },
+
     /// Get daemon status info.
     #[serde(rename = "status")]
     Status,
@@ -45,6 +55,8 @@ pub struct HintShellResponse {
     pub suggestions: Option<Vec<SuggestionItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<DaemonStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_prune: Option<HistoryPruneSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -72,6 +84,7 @@ impl HintShellResponse {
             success: true,
             suggestions: Some(items),
             status: None,
+            history_prune: None,
             error: None,
         }
     }
@@ -81,6 +94,17 @@ impl HintShellResponse {
             success: true,
             suggestions: None,
             status: Some(status),
+            history_prune: None,
+            error: None,
+        }
+    }
+
+    pub fn ok_history_prune(history_prune: HistoryPruneSummary) -> Self {
+        Self {
+            success: true,
+            suggestions: None,
+            status: None,
+            history_prune: Some(history_prune),
             error: None,
         }
     }
@@ -90,6 +114,7 @@ impl HintShellResponse {
             success: true,
             suggestions: None,
             status: None,
+            history_prune: None,
             error: None,
         }
     }
@@ -99,6 +124,7 @@ impl HintShellResponse {
             success: false,
             suggestions: None,
             status: None,
+            history_prune: None,
             error: Some(msg.to_string()),
         }
     }
@@ -121,6 +147,18 @@ mod tests {
         assert!(json.contains("git c"));
         assert!(json.contains("/workspace/hintshell"));
         assert!(json.contains("bash"));
+    }
+
+    #[test]
+    fn test_serialize_prune_history_request() {
+        let request = HintShellRequest::PruneHistory {
+            days: 30,
+            dry_run: true,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("prune_history"));
+        assert!(json.contains("\"days\":30"));
+        assert!(json.contains("\"dry_run\":true"));
     }
 
     #[test]

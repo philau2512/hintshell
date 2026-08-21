@@ -2,6 +2,16 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.10] - 2026-08-21
+
+### New Features
+- **History retention**: The daemon removes only user-recorded commands that have not been used for 90 days and were used fewer than three times. Commands from the default catalog remain protected.
+- **Manual pruning**: Run `hs history prune --dry-run` to preview the default 90-day cleanup, or provide `--days <N>` for an explicit retention period. Run without `--dry-run` to remove the reported candidates.
+
+### Improvements
+- **Bounded maintenance**: Automatic history cleanup runs during daemon startup at most once every 24 hours, outside the suggestion input path.
+- **Context cleanup**: Pruning removes matching per-directory history records in the same SQLite transaction.
+
 ## [0.3.9] - 2026-08-21
 
 ### Improvements
@@ -16,7 +26,7 @@ All notable changes to HintShell will be documented in this file.
 ### Diagnostics
 - **Opt-in startup trace**: `HINTSHELL_TRACE_STARTUP=1` records wrapper, ConPTY, rcfile, and first-prompt timing to `~/.hintshell/startup-trace.log` without relying on terminal output that can be cleared during initialization.
 
-## [0.3.8] - 2026-03-14
+## [0.3.8] - 2026-08-04
 
 ### Bug Fixes
 - **Windows update progress**: `hs update` runs npm lifecycle scripts in the foreground, showing release download and setup output while using bounded npm network retry and timeout settings.
@@ -26,7 +36,7 @@ All notable changes to HintShell will be documented in this file.
 ### Documentation
 - **Installer visibility**: Recommend `--foreground-scripts` for manual installs so users can observe download, extraction, and setup progress.
 
-## [0.3.7] - 2026-03-14
+## [0.3.7] - 2026-08-03
 
 ### Bug Fixes
 - **Installer lifecycle**: Stop both daemon and live wrapper before replacing binaries, use a bounded release download, and extract Windows ZIP archives with PowerShell instead of Git Bash `tar`.
