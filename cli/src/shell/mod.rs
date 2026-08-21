@@ -88,8 +88,38 @@ fn git_bash_fast_rcfile_content(rcfile: &Path) -> String {
 
     format!(
         r#"# HintShell Git Bash Fast initialization
-# This managed file intentionally does not source user Bash startup files.
-PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[0m\]\n$ '
+# Fast pure-bash git branch resolver (no external git.exe fork = ultra fast)
+_hintshell_git_branch() {{
+  local d="$PWD" head=""
+  while [[ -n "$d" ]]; do
+    if [[ -f "$d/.git/HEAD" ]]; then
+      read -r head < "$d/.git/HEAD" 2>/dev/null
+      break
+    elif [[ -f "$d/.git" ]]; then
+      local gitdir=""
+      read -r gitdir < "$d/.git" 2>/dev/null
+      if [[ "$gitdir" == gitdir:\ * ]]; then
+        local realdir="${{gitdir#gitdir: }}"
+        [[ "$realdir" != /* && "$realdir" != [A-Za-z]:* ]] && realdir="$d/$realdir"
+        if [[ -f "$realdir/HEAD" ]]; then
+          read -r head < "$realdir/HEAD" 2>/dev/null
+          break
+        fi
+      fi
+    fi
+    local p="${{d%/*}}"
+    [[ "$p" == "$d" ]] && break
+    d="$p"
+  done
+  if [[ -n "$head" ]]; then
+    if [[ "$head" == ref:\ refs/heads/* ]]; then
+      printf ' (%s)' "${{head#ref: refs/heads/}}"
+    else
+      printf ' (%s)' "${{head:0:7}}"
+    fi
+  fi
+}}
+PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[36m\]`_hintshell_git_branch`\[\e[0m\]\n$ '
 export PATH="{bin_dir}:$PATH"
 if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
   _hintshell_trace_phase() {{
@@ -858,7 +888,7 @@ mod tests {
         let rcfile = home.join(GIT_BASH_FAST_RCFILE_NAME);
         let content = git_bash_fast_rcfile_content(&rcfile);
 
-        assert!(content.contains("PS1='\\[\\e[32m\\]\\u@\\h \\[\\e[33m\\]\\w\\[\\e[0m\\]\\n$ '"));
+        assert!(content.contains("_hintshell_git_branch"));
         assert!(content.contains("source '"));
         assert!(content.contains("_hintshell_live_record"));
         assert!(content.contains(") > /dev/null 2>&1 & disown"));
