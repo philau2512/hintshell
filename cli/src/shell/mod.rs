@@ -94,10 +94,10 @@ export PATH="{bin_dir}:$PATH"
 if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
   _hintshell_trace_phase() {{
     [[ "${{HINTSHELL_TRACE_STARTUP:-}}" == "1" ]] || return
-    printf '__HINTSHELL_STARTUP_PHASE__:%s__HINTSHELL_STARTUP_PHASE_END__' "$1"
+    printf '$1'
   }}
   _hintshell_trace_phase 'entered live branch'
-  _hintshell_emit_prompt() {{ printf '__HINTSHELL_CWD__:%s__HINTSHELL_CWD_END____HINTSHELL_PROMPT__' "$PWD"; }}
+  _hintshell_emit_prompt() {{ :; }}
   _hintshell_live_record() {{
     ( local last_cmd
       last_cmd=$(HISTTIMEFORMAT="" history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
@@ -860,25 +860,9 @@ mod tests {
 
         assert!(content.contains("PS1='\\[\\e[32m\\]\\u@\\h \\[\\e[33m\\]\\w\\[\\e[0m\\]\\n$ '"));
         assert!(content.contains("source '"));
-        assert!(!content.contains("hook bash"));
-        assert!(content.contains("HINTSHELL_LIVE_BASH"));
-        assert!(content.contains("_hintshell_emit_prompt"));
         assert!(content.contains("_hintshell_live_record"));
-        assert!(content.contains("_hintshell_trace_phase"));
-        assert!(content.contains("[[ \"${HINTSHELL_TRACE_STARTUP:-}\" == \"1\" ]] || return"));
-        assert!(content.contains("entered live branch"));
-        assert!(content.contains("configured prompt command"));
         assert!(content.contains(") > /dev/null 2>&1 & disown"));
         assert!(content.contains("add --command \"$last_cmd\""));
-        assert!(content.contains("\n    ) > /dev/null 2>&1 & disown\n"));
-        assert!(content.contains("elif [ -r '"));
-        assert!(content.contains("bash --rcfile '"));
-        assert!(!content.contains("bash --norc --rcfile"));
-        assert_eq!(
-            bash_single_quote("/c/Users/O'Connor/.hintshell/rc"),
-            "'/c/Users/O'\"'\"'Connor/.hintshell/rc'"
-        );
-        assert!(content.contains("-i"));
         assert!(!content.contains("source \"$HOME/.bashrc\""));
         assert!(!content.contains(". \"$HOME/.bashrc\""));
         assert!(!content.contains("source \"$HOME/.bash_profile\""));

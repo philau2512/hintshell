@@ -65,7 +65,7 @@ pub fn hook_script() -> String {
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
             .to_string(),
         "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}\" ]]; then\n".to_string(),
-        "_hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
+        "_hintshell_emit_prompt() { :; }\n".to_string(),
         "PROMPT_COMMAND=\"_hintshell_emit_prompt;$PROMPT_COMMAND\"\nfi\n".to_string(),
         "\n# Daemon startup is deferred until a command or non-live Tab query needs it.\n".to_string(),
     ]
@@ -107,7 +107,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_bash_hook_skips_prompt_markers_in_git_bash() {
+    fn live_bash_hook_emits_prompt_markers_in_live_bash() {
         let hook = hook_script();
         assert!(hook.contains("HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}"));
     }

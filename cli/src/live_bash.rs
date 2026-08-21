@@ -23,6 +23,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 const QUERY_DEBOUNCE: Duration = Duration::from_millis(40);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(180);
+const TAB_ACCEPT_CLEAR_DELAY: Duration = Duration::from_millis(8);
 const MAX_VISIBLE_SUGGESTIONS: usize = 6;
 
 fn trace_startup_enabled(value: Option<&str>) -> bool {
@@ -247,7 +248,9 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
         while let Ok(shell_event) = shell_events_rx.try_recv() {
             clear_overlay(&mut state, &output)?;
             match shell_event {
-                ShellEvent::Output(bytes) => write_terminal(&output, &bytes)?,
+                ShellEvent::Output(bytes) => {
+                    write_terminal(&output, &bytes)?;
+                }
                 ShellEvent::StartupPhase(phase) => {
                     trace_startup(started, &format!("rcfile {phase}"));
                 }
@@ -256,6 +259,9 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                         trace_startup(started, "received first prompt marker");
                         saw_first_prompt = true;
                     }
+                    state.tracking_valid = true;
+                    state.buffer.clear();
+                    state.clear();
                 }
                 ShellEvent::Closed => running = false,
             }
@@ -605,11 +611,11 @@ enum ShellEvent {
     Closed,
 }
 
-const CWD_MARKER_START: &[u8] = b"__HINTSHELL_CWD__:";
-const CWD_MARKER_END: &[u8] = b"__HINTSHELL_CWD_END__";
-const STARTUP_PHASE_MARKER_START: &[u8] = b"__HINTSHELL_STARTUP_PHASE__:";
-const STARTUP_PHASE_MARKER_END: &[u8] = b"__HINTSHELL_STARTUP_PHASE_END__";
-const PROMPT_MARKER: &[u8] = b"__HINTSHELL_PROMPT__";
+const CWD_MARKER_START: &[u8] = b"\x1eHINTSHELL_CWD:";
+const CWD_MARKER_END: &[u8] = b"\x1f";
+const STARTUP_PHASE_MARKER_START: &[u8] = b"\x1eHINTSHELL_STARTUP_PHASE:";
+const STARTUP_PHASE_MARKER_END: &[u8] = b"\x1f";
+const PROMPT_MARKER: &[u8] = b"\x1eHINTSHELL_PROMPT\x1f";
 
 fn start_output_pump(
     mut reader: Box<dyn Read + Send>,
@@ -878,7 +884,12 @@ fn handle_key(
                 if let Some(command) = command {
                     clear_overlay(state, output)?;
                     state.clear();
+                    // Bash redraws the current readline buffer after Ctrl-U. Sending
+                    // the selected text immediately can race that redraw through ConPTY,
+                    // leaving the old prefix on its own visual line. Let readline finish
+                    // the discard before inserting the accepted suggestion.
                     write_to_shell(writer, b"\x15")?;
+                    thread::sleep(TAB_ACCEPT_CLEAR_DELAY);
                     write_to_shell(writer, command.as_bytes())?;
                     state.buffer = command;
                     state.generation = state.generation.wrapping_add(1);
@@ -1063,18 +1074,22 @@ fn clear_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> R
         return Ok(());
     }
 
+    let (cur_col, cur_row) = position().unwrap_or((0, 0));
     let mut stdout = output
         .lock()
         .map_err(|_| "terminal output is unavailable".to_string())?;
-    let mut frame = String::from("\x1b7");
+
+    let mut frame = String::new();
     for _ in 0..state.rendered_lines {
         frame.push_str("\x1b[1B\r\x1b[2K");
     }
-    frame.push_str("\x1b8");
     stdout
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.flush())
         .map_err(|error| format!("cannot clear HintShell overlay: {error}"))?;
+
+    let _ = execute!(stdout, crossterm::cursor::MoveTo(cur_col, cur_row));
+    let _ = stdout.flush();
 
     state.rendered_lines = 0;
     Ok(())
@@ -1090,8 +1105,8 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let inner_width = overlay_inner_width(width);
     let command_width = overlay_command_width(width);
     let total = state.suggestions.len();
-    let (_, cursor_row) = position().unwrap_or((0, 0));
-    let shown = visible_suggestion_rows(cursor_row, terminal_height, total);
+    let (cur_col, cur_row) = position().unwrap_or((0, 0));
+    let shown = visible_suggestion_rows(cur_row, terminal_height, total);
     if shown == 0 {
         return Ok(());
     }
@@ -1099,10 +1114,10 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let selected = state.selected.min(total.saturating_sub(1));
     let viewport_start = viewport_start(selected, total, shown);
     let viewport_end = viewport_start + shown;
-    let mut frame = String::from("\x1b7\n");
+    let mut frame = String::new();
     let counter = format!(" {}/{} ", selected + 1, total);
     frame.push_str(&format!(
-        "\r\x1b[38;5;141m╭{}{}╮\x1b[0m\n",
+        "\x1b[1B\r\x1b[2K\x1b[38;5;141m╭{}{}╮\x1b[0m",
         "─".repeat(inner_width.saturating_sub(counter.len())),
         counter
     ));
@@ -1119,11 +1134,11 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         let row = format!(" {marker} {command:<command_width$}  {source:<20} ",);
         if selected_row {
             frame.push_str(&format!(
-                "\r\x1b[38;5;141m│\x1b[48;5;60m\x1b[38;5;255m{row}\x1b[0m\x1b[38;5;141m│\x1b[0m\n"
+                "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[48;5;60m\x1b[38;5;255m{row}\x1b[0m\x1b[38;5;141m│\x1b[0m"
             ));
         } else {
             frame.push_str(&format!(
-                "\r\x1b[38;5;141m│\x1b[0m{row}\x1b[38;5;141m│\x1b[0m\n"
+                "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[0m{row}\x1b[38;5;141m│\x1b[0m"
             ));
         }
     }
@@ -1135,11 +1150,11 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .unwrap_or("history suggestion");
     let description = fit_width(description, inner_width.saturating_sub(2));
     frame.push_str(&format!(
-        "\r\x1b[38;5;141m│\x1b[38;5;244m  {description:<desc_width$}\x1b[38;5;141m│\x1b[0m\n",
+        "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[38;5;244m  {description:<desc_width$}\x1b[38;5;141m│\x1b[0m",
         desc_width = inner_width.saturating_sub(2)
     ));
     frame.push_str(&format!(
-        "\r\x1b[38;5;141m╰{}╯\x1b[0m\x1b8",
+        "\x1b[1B\r\x1b[2K\x1b[38;5;141m╰{}╯\x1b[0m",
         "─".repeat(inner_width)
     ));
 
@@ -1150,6 +1165,10 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.flush())
         .map_err(|error| format!("cannot render HintShell overlay: {error}"))?;
+
+    let _ = execute!(stdout, crossterm::cursor::MoveTo(cur_col, cur_row));
+    let _ = stdout.flush();
+
     state.rendered_lines = rendered_lines;
     Ok(())
 }
@@ -1260,7 +1279,7 @@ mod tests {
         let cwd = Arc::new(Mutex::new(None));
         let mut pending = Vec::new();
         let bytes = filter_cwd_markers(
-            b"prompt__HINTSHELL_CWD__:/tmp/workspace__HINTSHELL_CWD_END__next",
+            b"prompt\x1eHINTSHELL_CWD:/tmp/workspace\x1fnext",
             &mut pending,
             Some(&cwd),
         );
@@ -1272,8 +1291,8 @@ mod tests {
     fn cwd_marker_can_span_output_reads() {
         let cwd = Arc::new(Mutex::new(None));
         let mut pending = Vec::new();
-        let first = filter_cwd_markers(b"__HINTSHELL_CWD__:/tmp/", &mut pending, Some(&cwd));
-        let second = filter_cwd_markers(b"project__HINTSHELL_CWD_END__", &mut pending, Some(&cwd));
+        let first = filter_cwd_markers(b"\x1eHINTSHELL_CWD:/tmp/", &mut pending, Some(&cwd));
+        let second = filter_cwd_markers(b"project\x1f", &mut pending, Some(&cwd));
         assert!(first.is_empty());
         assert!(second.is_empty());
         assert_eq!(*cwd.lock().unwrap(), Some("/tmp/project".to_string()));
@@ -1283,8 +1302,8 @@ mod tests {
     fn prompt_marker_resumes_overlay_without_rendering() {
         let (events, received) = mpsc::channel();
         let mut pending = Vec::new();
-        let first = filter_prompt_markers(b"before__HINTSHELL_", &mut pending, &events);
-        let second = filter_prompt_markers(b"PROMPT__after", &mut pending, &events);
+        let first = filter_prompt_markers(b"before\x1eHINTSHELL_", &mut pending, &events);
+        let second = filter_prompt_markers(b"PROMPT\x1fafter", &mut pending, &events);
 
         assert_eq!(first, b"before");
         assert_eq!(second, b"after");
@@ -1295,8 +1314,8 @@ mod tests {
     fn prompt_marker_can_span_output_reads() {
         let (events, received) = mpsc::channel();
         let mut pending = Vec::new();
-        let first = filter_prompt_markers(b"__HINTSHELL_PROM", &mut pending, &events);
-        let second = filter_prompt_markers(b"PT__", &mut pending, &events);
+        let first = filter_prompt_markers(b"\x1eHINTSHELL_PROM", &mut pending, &events);
+        let second = filter_prompt_markers(b"PT\x1f", &mut pending, &events);
 
         assert!(first.is_empty());
         assert!(second.is_empty());
@@ -1348,6 +1367,13 @@ mod tests {
     }
 
     #[test]
+    fn accepting_a_suggestion_discards_before_inserting() {
+        // The input bridge must finish Bash's Ctrl-U redraw before it writes the
+        // selected command; otherwise ConPTY can render the prefix on a stray line.
+        assert!(TAB_ACCEPT_CLEAR_DELAY > Duration::ZERO);
+    }
+
+    #[test]
     fn defers_path_completion_to_bash() {
         assert_eq!(
             tab_action("cd src/comp", Some(&suggestion("cd src/components"))),
@@ -1377,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_frame_uses_one_consistent_inner_width() {
+    fn overlay_frame_does_not_contain_dec_save_restore() {
         let width = 44;
         let inner_width = overlay_inner_width(width);
         let command_width = overlay_command_width(width);

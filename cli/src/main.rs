@@ -483,7 +483,8 @@ async fn main() {
 fn git_bash_fast_vscode_profile(rcfile: &std::path::Path) -> String {
     let rcfile = shell::to_posix_path(rcfile);
     let cli = shell::hintshell_home().join("bin").join("hintshell.exe");
-    let cli = cli.to_string_lossy().replace('\\', "\\\\");
+    let cli_str = cli.to_string_lossy();
+    let cli_json = cli_str.replace('\\', "\\\\");
     format!(
         r#"✅ Git Bash Fast rcfile created.
 Add this profile to VS Code user settings, then select it manually:
@@ -498,7 +499,7 @@ Add this profile to VS Code user settings, then select it manually:
   }}
 }}
 HintShell does not edit VS Code settings or change the default profile."#,
-        cli = cli,
+        cli = cli_json,
         rcfile = rcfile,
     )
 }
