@@ -340,6 +340,25 @@ function Get-HintShellStatus {
     }
 }
 
+function script:Get-HSInstalledVersion {
+    param([string]$CliPath)
+    if (-not $CliPath) { return $null }
+
+    $output = @(& $CliPath --version 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $match = [regex]::Match(($output -join "`n"), '\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b')
+    if ($match.Success) { return $match.Groups[1].Value }
+    return $null
+}
+
+function script:Get-HSLatestNpmVersion {
+    $output = @(& npm view hintshell@latest version --fetch-timeout=30000 --fetch-retries=1 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $version = ($output -join '').Trim()
+    if ($version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { return $version }
+    return $null
+}
+
 function Invoke-HSWrapper {
     param(
         [Parameter(Position = 0)] [string]$Command,
@@ -367,19 +386,31 @@ function Invoke-HSWrapper {
         'update' {
             Write-Host "▶ hs update" -ForegroundColor Cyan
             try {
-                # 1. Stop daemon FIRST to release file locks on Windows
-                Write-Host "🛑 Stopping daemon (release file locks)..." -ForegroundColor Yellow
                 $cliPath = Resolve-HSCliPath -ModulePath $modulePath -ConfigRoot $configRoot
+                $installedVersion = Get-HSInstalledVersion -CliPath $cliPath
+                $latestVersion = Get-HSLatestNpmVersion
+                if ($installedVersion -and $latestVersion -and $installedVersion -eq $latestVersion) {
+                    Write-Host "✅ HintShell $installedVersion is already the latest version." -ForegroundColor Green
+                    return
+                }
+                if (-not $latestVersion) {
+                    Write-Host "⚠️ Could not check the latest npm version; continuing with the requested update." -ForegroundColor Yellow
+                } elseif ($installedVersion) {
+                    Write-Host "🆙 Updating HintShell: $installedVersion → $latestVersion" -ForegroundColor Cyan
+                } else {
+                    Write-Host "🆙 Updating HintShell to $latestVersion" -ForegroundColor Cyan
+                }
+
+                # Stop the daemon only after confirming an update is needed, releasing Windows file locks.
+                Write-Host "🛑 Stopping daemon (release file locks)..." -ForegroundColor Yellow
                 if ($cliPath) {
                     & $cliPath stop
                 } else {
                     $killed = Stop-HSDaemonProcesses
                     Write-Host "   Stopped $killed process(es) (CLI not found)." -ForegroundColor DarkGray
                 }
-                # Do not create .disabled flag here — user wants update, not disable
 
-                # 2. npm runs `preinstall`/`postinstall` itself. Foreground scripts expose
-                # download/extract progress, while bounded retries prevent a quiet network stall.
+                # npm runs preinstall/postinstall itself. Foreground scripts expose progress.
                 Write-Host "🔄 Installing HintShell update from npm (download progress follows)..." -ForegroundColor Cyan
                 npm install -g hintshell@latest --foreground-scripts --fetch-timeout=30000 --fetch-retries=1
                 if ($LASTEXITCODE -ne 0) {
@@ -389,16 +420,12 @@ function Invoke-HSWrapper {
                 }
                 Write-Host "✅ npm install finished." -ForegroundColor Green
 
-                # 3. postinstall already ran `hintshell init`; only reload the new module.
-                Write-Host "🔄 Reloading module + starting daemon..." -ForegroundColor Cyan
-                $freshModule = Join-Path $configRoot "module\HintShellModule.psd1"
-                if (Test-Path $freshModule) {
-                    Remove-Module HintShellModule -Force -ErrorAction SilentlyContinue
-                    Import-Module $freshModule -Force -DisableNameChecking -ErrorAction SilentlyContinue
-                }
-                Start-HintShell -Force
+                # Do not unload this module from inside its own command: that removes its private
+                # daemon helpers before this invocation can verify the restarted daemon.
+                Write-Host "🔄 Starting daemon..." -ForegroundColor Cyan
+                Start-HintShell -Force -Quiet
                 if (Test-HSDaemonAlive -TimeoutMs 1200 -Retries 2) {
-                    Write-Host "✅ hs update complete — daemon healthy." -ForegroundColor Green
+                    Write-Host "✅ hs update complete — daemon healthy. Open a new terminal to load the updated PowerShell module." -ForegroundColor Green
                 } else {
                     Write-Host "⚠️ Update installed but daemon not healthy. Run: hs start" -ForegroundColor Yellow
                 }

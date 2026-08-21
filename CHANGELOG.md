@@ -2,6 +2,15 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.12] - 2026-08-21
+
+### Bug Fixes
+- **Git Bash startup tracing**: `HINTSHELL_TRACE_STARTUP` now enables terminal and file trace output only when explicitly set to `1`; setting it to `0` keeps diagnostics disabled.
+- **PowerShell update completion**: Keep the active module loaded while `hs update` restarts and verifies the daemon, preventing a successful npm update from incorrectly reporting missing private daemon helpers.
+
+### Improvements
+- **Update version check**: `hs update` compares the installed CLI version with npm `latest` before stopping the daemon or running npm lifecycle scripts, and exits cleanly when the installed version is current.
+
 ## [0.3.11] - 2026-08-21
 
 ### Improvements

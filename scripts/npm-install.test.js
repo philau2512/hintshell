@@ -28,13 +28,18 @@ test("Windows stop script stops only live wrapper processes", () => {
   assert.doesNotMatch(script, /Get-Process -Name 'hintshell', 'hintshell-core'/);
 });
 
-test("PowerShell update exposes npm lifecycle progress without duplicate init", () => {
+test("PowerShell update checks npm version before lifecycle work and retains module helpers", () => {
   const module = fs.readFileSync(
     path.join(__dirname, "..", "integrations", "powershell", "HintShellModule", "HintShellModule.psm1"),
     "utf8"
   );
-  assert.match(module, /npm install -g hintshell@latest --foreground-scripts --fetch-timeout=30000 --fetch-retries=1/);
-  assert.doesNotMatch(module, /Ensuring local install \(hintshell init\)/);
+  assert.match(module, /function script:Get-HSInstalledVersion/);
+  assert.match(module, /function script:Get-HSLatestNpmVersion/);
+  assert.match(module, /npm view hintshell@latest version --fetch-timeout=30000 --fetch-retries=1/);
+  assert.match(module, /already the latest version/);
+  assert.match(module, /if \(\$installedVersion -and \$latestVersion -and \$installedVersion -eq \$latestVersion\)[\s\S]*?return[\s\S]*?Stopping daemon/);
+  assert.doesNotMatch(module, /Remove-Module HintShellModule -Force/);
+  assert.doesNotMatch(module, /Reloading module \+ starting daemon/);
 });
 
 test("isolated tests skip global process control", () => {
