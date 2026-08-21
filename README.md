@@ -109,6 +109,33 @@ HINTSHELL_DISABLE_AUTO_BASH=1 bash
 
 > **Preview limitation:** the live wrapper requires an ANSI-capable terminal. For full-screen terminal applications, bypass the wrapper and open them from a normal Bash session.
 
+### Git Bash Fast in VS Code
+
+A VS Code Git Bash profile using `--norc --noprofile` intentionally skips `~/.bashrc`, so it also skips HintShell's standard Bash hook. Create a separate, minimal rcfile instead:
+
+```bash
+hs init --git-bash-fast
+```
+
+The command creates `~/.hintshell/git-bash-fast.bashrc`, which keeps the green/yellow prompt, initializes HintShell, and does **not** source your aliases, plugins, `.bashrc`, or `.bash_profile`. It prints a `Git Bash Fast + HintShell` profile for VS Code. Add that profile to user settings and select it manually; HintShell does not edit `settings.json` or change `terminal.integrated.defaultProfile.windows`.
+
+The emitted profile has this shape (the rcfile path reflects your own user directory):
+
+```json
+"terminal.integrated.profiles.windows": {
+  "Git Bash Fast + HintShell": {
+    "path": "C:\\Users\\<you>\\.hintshell\\bin\\hintshell.exe",
+    "args": ["bash", "--rcfile", "/c/Users/<you>/.hintshell/git-bash-fast.bashrc", "-i"],
+    "env": {
+      "TERM": "xterm-256color"
+    },
+    "icon": "terminal-bash"
+  }
+}
+```
+
+The live overlay needs VS Code's ANSI-capable integrated terminal and Windows ConPTY. Select the original `Git Bash Fast` profile for a session without HintShell. Within the dedicated profile, set `HINTSHELL_DISABLE_AUTO_BASH=1` before starting Bash to bypass the wrapper for a session.
+
 ### macOS Bash / Zsh live overlay
 
 On macOS, `hs init` configures the realtime overlay automatically for interactive Bash and Zsh sessions. For Bash login shells, it also adds a managed block to `~/.bash_profile` that loads `~/.bashrc`, so the overlay starts in macOS Terminal and iTerm2 without manual profile edits.

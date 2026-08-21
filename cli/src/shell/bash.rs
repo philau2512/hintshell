@@ -54,9 +54,9 @@ pub fn hook_script() -> String {
         "    fi\n".to_string(),
         "}\n".to_string(),
         "bind -x '\"\\t\": _hintshell_tab'\nfi\n".to_string(),
-        // Record executed commands
+        // Record executed commands without blocking live-overlay prompt redraws.
         "\n_hintshell_preexec() {\n".to_string(),
-        "    _hintshell_ensure_daemon\n".to_string(),
+        "    [[ -z \"${HINTSHELL_LIVE_BASH:-}\" ]] && _hintshell_ensure_daemon\n".to_string(),
         "    local last_cmd\n".to_string(),
         "    last_cmd=$(HISTTIMEFORMAT=\"\" history 1 | sed 's/^[ ]*[0-9]*[ ]*//')\n".to_string(),
         "    [[ -n \"$last_cmd\" ]] && (\"$HINTSHELL_BIN\" add --command \"$last_cmd\" --directory \"$PWD\" --shell bash >/dev/null 2>&1 &)\n"
@@ -67,8 +67,7 @@ pub fn hook_script() -> String {
         "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}\" ]]; then\n".to_string(),
         "_hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
         "PROMPT_COMMAND=\"_hintshell_emit_prompt;$PROMPT_COMMAND\"\nfi\n".to_string(),
-        "\n# Auto-start daemon\n".to_string(),
-        "_hintshell_ensure_daemon\n".to_string(),
+        "\n# Daemon startup is deferred until a command or non-live Tab query needs it.\n".to_string(),
     ]
     .concat()
 }
@@ -111,6 +110,23 @@ mod tests {
     fn live_bash_hook_skips_prompt_markers_in_git_bash() {
         let hook = hook_script();
         assert!(hook.contains("HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}"));
+    }
+
+    #[test]
+    fn live_bash_hook_defers_daemon_startup_until_history_recording_is_needed() {
+        let hook = hook_script();
+        assert!(hook.contains("[[ -z \"${HINTSHELL_LIVE_BASH:-}\" ]] && _hintshell_ensure_daemon"));
+    }
+
+    #[test]
+    fn hook_defers_daemon_startup_until_a_non_live_action() {
+        let hook = hook_script();
+        assert!(hook.contains("Daemon startup is deferred"));
+        assert!(!hook.contains("\n_hintshell_ensure_daemon\n"));
+        assert!(hook.contains("_hintshell_tab() {\n    _hintshell_ensure_daemon"));
+        assert!(hook.contains(
+            "_hintshell_preexec() {\n    [[ -z \"${HINTSHELL_LIVE_BASH:-}\" ]] && _hintshell_ensure_daemon"
+        ));
     }
 
     #[test]

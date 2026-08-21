@@ -97,7 +97,11 @@ enum Commands {
     },
 
     /// Initialize HintShell for all detected shells
-    Init,
+    Init {
+        /// Create a minimal rcfile and print a VS Code Git Bash Fast profile
+        #[arg(long)]
+        git_bash_fast: bool,
+    },
 
     /// Output shell hook code
     Hook {
@@ -255,7 +259,11 @@ async fn main() {
         }
         Commands::Bash { args } => run_live_shell(LiveShell::Bash, args),
         Commands::Zsh { args } => run_live_shell(LiveShell::Zsh, args),
-        Commands::Init => {
+        Commands::Init { git_bash_fast } => {
+            if git_bash_fast && !cfg!(windows) {
+                eprintln!("❌ --git-bash-fast is supported only on Windows.");
+                std::process::exit(1);
+            }
             println!("▶ hintshell init");
             if std::env::var_os("HINTSHELL_SKIP_PROCESS_CONTROL").is_some() {
                 println!("   HINTSHELL_SKIP_PROCESS_CONTROL set — skipped daemon stop.");
@@ -280,9 +288,14 @@ async fn main() {
 
             println!("🔍 Detecting shells...");
             let shells = shell::detect_shells();
-            if shells.is_empty() {
+            if shells.is_empty() && !git_bash_fast {
                 println!("⚠️ No supported shells detected.");
                 return;
+            }
+            if shells.is_empty() {
+                println!(
+                    "ℹ️ No shell detected on PATH; preparing the requested Git Bash Fast profile."
+                );
             }
 
             let bin_path = std::env::current_exe().unwrap_or_else(|_| "hintshell".into());
@@ -300,6 +313,16 @@ async fn main() {
                     match shell::install_assets(&bin_path) {
                         Ok(_) => println!("✅ (retry OK)"),
                         Err(e2) => println!("❌ {}", e2),
+                    }
+                }
+            }
+
+            if git_bash_fast {
+                match shell::install_git_bash_fast_rcfile() {
+                    Ok(path) => println!("{}", git_bash_fast_vscode_profile(&path)),
+                    Err(error) => {
+                        eprintln!("❌ Could not create Git Bash Fast rcfile: {error}");
+                        std::process::exit(1);
                     }
                 }
             }
@@ -345,7 +368,13 @@ async fn main() {
                 }
             }
 
-            // 3. Remove assets
+            // 3. Remove the dedicated Git Bash Fast rcfile, whether or not bash is currently on PATH.
+            match shell::uninstall_git_bash_fast_rcfile() {
+                Ok(()) => println!("✅ Cleared Git Bash Fast rcfile."),
+                Err(error) => eprintln!("⚠️ Failed to clear Git Bash Fast rcfile: {error}"),
+            }
+
+            // 4. Remove assets
             match shell::uninstall_assets() {
                 Ok(_) => println!("✅ Binaries removed."),
                 Err(e) => println!("⚠️ Failed to remove binaries: {}", e),
@@ -402,6 +431,56 @@ async fn main() {
                 }
             }
         }
+    }
+}
+
+fn git_bash_fast_vscode_profile(rcfile: &std::path::Path) -> String {
+    let rcfile = shell::to_posix_path(rcfile);
+    let cli = shell::hintshell_home().join("bin").join("hintshell.exe");
+    let cli = cli.to_string_lossy().replace('\\', "\\\\");
+    format!(
+        r#"✅ Git Bash Fast rcfile created.
+Add this profile to VS Code user settings, then select it manually:
+"terminal.integrated.profiles.windows": {{
+  "Git Bash Fast + HintShell": {{
+    "path": "{cli}",
+    "args": ["bash", "--rcfile", "{rcfile}", "-i"],
+    "env": {{
+      "TERM": "xterm-256color"
+    }},
+    "icon": "terminal-bash"
+  }}
+}}
+HintShell does not edit VS Code settings or change the default profile."#,
+        cli = cli,
+        rcfile = rcfile,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_bash_fast_profile_starts_live_wrapper_with_managed_rcfile() {
+        let profile = git_bash_fast_vscode_profile(std::path::Path::new(
+            r"C:\Users\Example\.hintshell\git-bash-fast.bashrc",
+        ));
+
+        assert!(profile.contains(r#""Git Bash Fast + HintShell""#));
+        let expected_cli = shell::hintshell_home()
+            .join("bin")
+            .join("hintshell.exe")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        assert!(profile.contains(&format!(r#""path": "{expected_cli}""#)));
+        assert!(profile.contains(r#""args": ["bash", "--rcfile", "/c/Users/Example/.hintshell/git-bash-fast.bashrc", "-i"]"#));
+        assert!(profile.contains(r#""env": {"#));
+        assert!(profile.contains(r#""TERM": "xterm-256color""#));
+        assert!(!profile.contains("--norc"));
+        assert!(!profile.contains("--noprofile"));
+        assert!(!profile.contains("exec bash"));
+        assert!(!profile.contains("defaultProfile"));
     }
 }
 

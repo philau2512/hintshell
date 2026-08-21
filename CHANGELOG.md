@@ -2,6 +2,20 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.9] - 2026-08-21
+
+### Improvements
+- **Git Bash Fast startup**: Add an opt-in `hs init --git-bash-fast` profile that starts the live Bash overlay directly through the managed HintShell launcher, uses a minimal isolated rcfile, and keeps the user’s `.bashrc` and `.bash_profile` untouched.
+- **Startup path**: Generate a static Bash hook, defer daemon startup away from initial prompt rendering, and record command history asynchronously so the prompt remains responsive.
+- **ConPTY compatibility**: Use stable ASCII internal markers for prompt and working-directory synchronization through Windows ConPTY.
+
+### Bug Fixes
+- **Bash rcfile loading**: Start the live child with `bash --rcfile <managed-file> -i`; this avoids the incompatible `--norc` combination that prevents Bash from loading the requested rcfile.
+- **Bash job notifications**: Detach asynchronous command-history writes with `disown`, preventing `[N]+ Done ...` messages from appearing at later prompts.
+
+### Diagnostics
+- **Opt-in startup trace**: `HINTSHELL_TRACE_STARTUP=1` records wrapper, ConPTY, rcfile, and first-prompt timing to `~/.hintshell/startup-trace.log` without relying on terminal output that can be cleared during initialization.
+
 ## [0.3.8] - 2026-03-14
 
 ### Bug Fixes

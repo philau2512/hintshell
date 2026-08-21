@@ -62,6 +62,103 @@ pub fn bin_dir_posix() -> String {
     to_posix_path(&hintshell_home().join("bin"))
 }
 
+/// Quote a value as one literal Bash word.
+pub fn bash_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+const GIT_BASH_FAST_RCFILE_NAME: &str = "git-bash-fast.bashrc";
+const GIT_BASH_FAST_HOOK_NAME: &str = "git-bash-fast-hook.bash";
+
+/// Path to the HintShell-managed startup file for a fast Git Bash profile.
+pub fn git_bash_fast_rcfile_path() -> PathBuf {
+    hintshell_home().join(GIT_BASH_FAST_RCFILE_NAME)
+}
+
+/// Path to the static Bash integration sourced by the fast Git Bash rcfile.
+fn git_bash_fast_hook_path() -> PathBuf {
+    hintshell_home().join(GIT_BASH_FAST_HOOK_NAME)
+}
+
+fn git_bash_fast_rcfile_content(rcfile: &Path) -> String {
+    let bin_dir = bin_dir_posix();
+    let cli = cli_bin_posix();
+    let rcfile = bash_single_quote(&to_posix_path(rcfile));
+    let hook = bash_single_quote(&to_posix_path(&git_bash_fast_hook_path()));
+
+    format!(
+        r#"# HintShell Git Bash Fast initialization
+# This managed file intentionally does not source user Bash startup files.
+PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[0m\]\n$ '
+export PATH="{bin_dir}:$PATH"
+if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
+  _hintshell_trace_phase() {{
+    [[ -n "${{HINTSHELL_TRACE_STARTUP:-}}" ]] || return
+    printf '__HINTSHELL_STARTUP_PHASE__:%s__HINTSHELL_STARTUP_PHASE_END__' "$1"
+  }}
+  _hintshell_trace_phase 'entered live branch'
+  _hintshell_emit_prompt() {{ printf '__HINTSHELL_CWD__:%s__HINTSHELL_CWD_END____HINTSHELL_PROMPT__' "$PWD"; }}
+  _hintshell_live_record() {{
+    ( local last_cmd
+      last_cmd=$(HISTTIMEFORMAT="" history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
+      [[ -n "$last_cmd" ]] && "{cli}" add --command "$last_cmd" --directory "$PWD" --shell bash
+    ) > /dev/null 2>&1 & disown
+  }}
+  _hintshell_trace_phase 'configured prompt command'
+  PROMPT_COMMAND="_hintshell_emit_prompt;_hintshell_live_record${{PROMPT_COMMAND:+;$PROMPT_COMMAND}}"
+elif [ -r {hook} ]; then
+  source {hook}
+fi
+# Run the ConPTY live overlay once; the child reloads this same minimal rcfile.
+if [[ -n "${{MSYSTEM:-}}" && $- == *i* && -t 0 && -t 1 && -z "${{HINTSHELL_LIVE_BASH:-}}" && -z "${{HINTSHELL_DISABLE_AUTO_BASH:-}}" ]]; then
+  exec "{cli}" bash --rcfile {rcfile} -i
+fi
+"#,
+        bin_dir = bin_dir,
+        cli = cli,
+        hook = hook,
+        rcfile = rcfile,
+    )
+}
+
+fn write_git_bash_fast_rcfile_at(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("Could not find Git Bash Fast rcfile parent directory")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(path, git_bash_fast_rcfile_content(path)).map_err(|error| error.to_string())
+}
+
+fn write_git_bash_fast_hook_at(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("Could not find Git Bash Fast hook parent directory")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(path, bash::hook_script()).map_err(|error| error.to_string())
+}
+
+/// Create or replace the managed rcfile used by the opt-in Git Bash Fast profile.
+pub fn install_git_bash_fast_rcfile() -> Result<PathBuf, String> {
+    let path = git_bash_fast_rcfile_path();
+    write_git_bash_fast_hook_at(&git_bash_fast_hook_path())?;
+    write_git_bash_fast_rcfile_at(&path)?;
+    Ok(path)
+}
+
+fn remove_git_bash_fast_rcfile_at(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Remove only the managed Git Bash Fast rcfile. Missing files are ignored.
+pub fn uninstall_git_bash_fast_rcfile() -> Result<(), String> {
+    remove_git_bash_fast_rcfile_at(&git_bash_fast_rcfile_path())?;
+    remove_git_bash_fast_rcfile_at(&git_bash_fast_hook_path())
+}
+
 /// Shared fzf resolver for Bash/Zsh.
 /// Git Bash cannot exec WinGet "Links" reparse-point shims (Permission denied);
 /// the real binary under WinGet/Packages works when called by absolute path.
@@ -706,7 +803,8 @@ mod tests {
 
     #[test]
     fn replace_managed_block_preserves_surrounding_content() {
-        let updated = replace_managed_block("before\n", "# Start", "# End", "# Start\nnew\n# End\n");
+        let updated =
+            replace_managed_block("before\n", "# Start", "# End", "# Start\nnew\n# End\n");
         assert_eq!(updated, "before\n# Start\nnew\n# End\n");
 
         let replaced = replace_managed_block(
@@ -752,6 +850,90 @@ mod tests {
         } else {
             env::remove_var("HINTSHELL_CONFIG_HOME");
         }
+    }
+
+    #[test]
+    fn git_bash_fast_rcfile_is_minimal_and_recursion_safe() {
+        let home = std::env::temp_dir().join("hintshell-git-bash-fast-content");
+        let rcfile = home.join(GIT_BASH_FAST_RCFILE_NAME);
+        let content = git_bash_fast_rcfile_content(&rcfile);
+
+        assert!(content.contains("PS1='\\[\\e[32m\\]\\u@\\h \\[\\e[33m\\]\\w\\[\\e[0m\\]\\n$ '"));
+        assert!(content.contains("source '"));
+        assert!(!content.contains("hook bash"));
+        assert!(content.contains("HINTSHELL_LIVE_BASH"));
+        assert!(content.contains("_hintshell_emit_prompt"));
+        assert!(content.contains("_hintshell_live_record"));
+        assert!(content.contains("_hintshell_trace_phase"));
+        assert!(content.contains("entered live branch"));
+        assert!(content.contains("configured prompt command"));
+        assert!(content.contains(") > /dev/null 2>&1 & disown"));
+        assert!(content.contains("add --command \"$last_cmd\""));
+        assert!(content.contains("\n    ) > /dev/null 2>&1 & disown\n"));
+        assert!(content.contains("elif [ -r '"));
+        assert!(content.contains("bash --rcfile '"));
+        assert!(!content.contains("bash --norc --rcfile"));
+        assert_eq!(
+            bash_single_quote("/c/Users/O'Connor/.hintshell/rc"),
+            "'/c/Users/O'\"'\"'Connor/.hintshell/rc'"
+        );
+        assert!(content.contains("-i"));
+        assert!(!content.contains("source \"$HOME/.bashrc\""));
+        assert!(!content.contains(". \"$HOME/.bashrc\""));
+        assert!(!content.contains("source \"$HOME/.bash_profile\""));
+        assert!(!content.contains(". \"$HOME/.bash_profile\""));
+    }
+
+    #[test]
+    fn git_bash_fast_rcfile_write_replaces_only_managed_file() {
+        let root = std::env::temp_dir().join("hintshell-git-bash-fast-write");
+        let rcfile = root.join(GIT_BASH_FAST_RCFILE_NAME);
+        let user_bashrc = root.join(".bashrc");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&user_bashrc, "user configuration\n").unwrap();
+        fs::write(&rcfile, "stale managed content\n").unwrap();
+
+        write_git_bash_fast_rcfile_at(&rcfile).unwrap();
+        let hook = root.join(GIT_BASH_FAST_HOOK_NAME);
+        write_git_bash_fast_hook_at(&hook).unwrap();
+        assert!(fs::read_to_string(&hook)
+            .unwrap()
+            .contains("# --- HintShell Bash Integration ---"));
+        assert!(fs::read_to_string(&rcfile)
+            .unwrap()
+            .contains("# HintShell Git Bash Fast initialization"));
+        write_git_bash_fast_rcfile_at(&rcfile).unwrap();
+
+        assert!(!fs::read_to_string(&rcfile)
+            .unwrap()
+            .contains("stale managed content"));
+        assert_eq!(
+            fs::read_to_string(&user_bashrc).unwrap(),
+            "user configuration\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_bash_fast_rcfile_removal_is_idempotent() {
+        let root = std::env::temp_dir().join("hintshell-git-bash-fast-remove");
+        let rcfile = root.join(GIT_BASH_FAST_RCFILE_NAME);
+        let user_bashrc = root.join(".bashrc");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&rcfile, "managed\n").unwrap();
+        fs::write(&user_bashrc, "user configuration\n").unwrap();
+
+        remove_git_bash_fast_rcfile_at(&rcfile).unwrap();
+        remove_git_bash_fast_rcfile_at(&rcfile).unwrap();
+
+        assert!(!rcfile.exists());
+        assert_eq!(
+            fs::read_to_string(&user_bashrc).unwrap(),
+            "user configuration\n"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
