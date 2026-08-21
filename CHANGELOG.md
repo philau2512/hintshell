@@ -2,6 +2,12 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.13] - 2026-08-21
+
+### Bug Fixes
+- **Git Bash Fast overlay rendering**: Fix newline injection and dual-cursor desync in Windows ConPTY by restoring exact relative cursor coordinates via `MoveTo` and eliminating non-printable control byte leaks from `PROMPT_COMMAND`.
+- **Git Bash Fast Tab completion**: Synchronize buffer replacement and discard delays so Tab acceptance cleanly stays on a single line without leaving duplicate command artifacts.
+
 ## [0.3.12] - 2026-08-21
 
 ### Bug Fixes
