@@ -8,7 +8,17 @@ $script:HS_Circuit = @{
     CooldownMs   = 5000
 }
 
-$script:HS_StartLock = $null
+function script:Read-HSPipeLine {
+    param(
+        [Parameter(Mandatory)] [System.IO.StreamReader]$Reader,
+        [int]$TimeoutMs = 300
+    )
+    $task = $Reader.ReadLineAsync()
+    if (-not $task.Wait([Math]::Max(1, $TimeoutMs))) {
+        throw [System.TimeoutException]::new("HintShell IPC response timed out after $TimeoutMs ms")
+    }
+    return $task.Result
+}
 
 function script:Test-HSDaemonAlive {
     <#
@@ -20,6 +30,8 @@ function script:Test-HSDaemonAlive {
         [int]$Retries = 1
     )
     for ($attempt = 1; $attempt -le [Math]::Max(1, $Retries); $attempt++) {
+        $pipe = $null
+        $reader = $null
         try {
             $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
                 '.', 'hintshell', [System.IO.Pipes.PipeDirection]::InOut
@@ -30,17 +42,15 @@ function script:Test-HSDaemonAlive {
             $pipe.Write($bytes, 0, $bytes.Length)
             $pipe.Flush()
             $reader = [System.IO.StreamReader]::new($pipe, [System.Text.Encoding]::UTF8)
-            $line = $reader.ReadLine()
-            $pipe.Dispose()
-            if ([string]::IsNullOrWhiteSpace($line)) {
-                if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 150; continue }
-                return $false
-            }
+            $line = Read-HSPipeLine -Reader $reader -TimeoutMs $TimeoutMs
+            if ([string]::IsNullOrWhiteSpace($line)) { throw [System.IO.InvalidDataException]::new('Empty daemon response') }
             $obj = $line | ConvertFrom-Json
             return [bool]$obj.success
         } catch {
-            if ($attempt -lt $Retries) { Start-Sleep -Milliseconds 150; continue }
-            return $false
+            if ($attempt -ge $Retries) { return $false }
+        } finally {
+            if ($null -ne $reader) { try { $reader.Dispose() } catch {} }
+            if ($null -ne $pipe) { try { $pipe.Dispose() } catch {} }
         }
     }
     return $false
@@ -156,6 +166,8 @@ function script:Invoke-HSDaemon {
         $cb.FailCount = 0
     }
 
+    $pipe = $null
+    $reader = $null
     try {
         $pipe  = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::InOut)
         $pipe.Connect(300)
@@ -165,33 +177,58 @@ function script:Invoke-HSDaemon {
         $pipe.Write($bytes, 0, $bytes.Length)
         $pipe.Flush()
         $reader = [System.IO.StreamReader]::new($pipe, [System.Text.Encoding]::UTF8)
-        $line   = $reader.ReadLine()
-        $pipe.Dispose()
+        $line   = Read-HSPipeLine -Reader $reader -TimeoutMs 300
 
-        # Success: reset circuit breaker
         $cb.FailCount = 0
-
         if ($line) { return ($line | ConvertFrom-Json).suggestions }
     }
     catch {
         $cb.FailCount++
         $cb.LastFailTime = [datetime]::Now
     }
+    finally {
+        if ($null -ne $reader) { try { $reader.Dispose() } catch {} }
+        if ($null -ne $pipe) { try { $pipe.Dispose() } catch {} }
+    }
     return @()
 }
 
 function script:Invoke-HSRecord {
-    param([string]$Command)
+    param(
+        [string]$Command,
+        [switch]$Asynchronous
+    )
+    $cwd = (Get-Location).Path
+    if ($Asynchronous) {
+        $null = Start-Job -ScriptBlock {
+            param($recordCommand, $recordDirectory)
+            $pipe = $null
+            try {
+                $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::Out)
+                $pipe.Connect(300)
+                $json = (@{ action = 'add'; command = $recordCommand; directory = $recordDirectory; shell = 'powershell' } | ConvertTo-Json -Compress) + "`n"
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+                $pipe.Write($bytes, 0, $bytes.Length)
+                $pipe.Flush()
+            } catch {
+            } finally {
+                if ($null -ne $pipe) { try { $pipe.Dispose() } catch {} }
+            }
+        } -ArgumentList $Command, $cwd
+        return
+    }
+
+    $pipe = $null
     try {
-        $pipe  = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::InOut)
+        $pipe  = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'hintshell', [System.IO.Pipes.PipeDirection]::Out)
         $pipe.Connect(300)
-        $cwd = (Get-Location).Path
         $json  = (@{ action = 'add'; command = $Command; directory = $cwd; shell = 'powershell' } | ConvertTo-Json -Compress) + "`n"
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $pipe.Write($bytes, 0, $bytes.Length)
         $pipe.Flush()
-        Start-Sleep -Milliseconds 50
-        $pipe.Dispose()
     }
     catch { }
+    finally {
+        if ($null -ne $pipe) { try { $pipe.Dispose() } catch {} }
+    }
 }

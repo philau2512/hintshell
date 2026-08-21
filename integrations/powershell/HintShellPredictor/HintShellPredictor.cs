@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Management.Automation;
 using System.Management.Automation.Subsystem;
 using System.Management.Automation.Subsystem.Prediction;
@@ -158,16 +159,26 @@ namespace HintShell.PowerShell
         {
             try
             {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(TimeoutMs);
+                CancellationToken cancellationToken = timeoutCts.Token;
+
                 using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut);
-                pipe.Connect(TimeoutMs);
+                pipe.ConnectAsync(cancellationToken).GetAwaiter().GetResult();
+                cancellationToken.ThrowIfCancellationRequested();
 
                 byte[] requestBytes = Encoding.UTF8.GetBytes(message);
-                pipe.Write(requestBytes, 0, requestBytes.Length);
-                pipe.Flush();
+                pipe.WriteAsync(requestBytes, 0, requestBytes.Length, cancellationToken)
+                    .GetAwaiter().GetResult();
+                pipe.FlushAsync(cancellationToken).GetAwaiter().GetResult();
 
                 using var reader = new StreamReader(pipe, Encoding.UTF8);
-                string? response = reader.ReadLine();
-                return response;
+                Task<string?> readTask = reader.ReadLineAsync();
+                return readTask.WaitAsync(cancellationToken).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
             }
             catch (TimeoutException)
             {

@@ -234,9 +234,15 @@ impl HintShellServer {
                 .first_pipe_instance(false)
                 .create(PIPE_NAME);
 
-            // Move current connected server into the handler
+            // Move current connected server into an independent handler so the accept loop
+            // can immediately promote the pre-created instance and accept another client.
             let connected = server;
-            self.handle_client(connected).await;
+            let engine = Arc::clone(&self.engine);
+            let shutdown = Arc::clone(&self.shutdown);
+            let start_time = self.start_time;
+            tokio::spawn(async move {
+                HintShellServer::handle_client(connected, engine, start_time, shutdown).await;
+            });
 
             // Promote next instance, or recreate if pre-create failed
             server = match next {
@@ -269,7 +275,12 @@ impl HintShellServer {
         loop {
             tokio::select! {
                 Ok((stream, _)) = listener.accept() => {
-                    self.handle_client(stream).await;
+                    let engine = Arc::clone(&self.engine);
+                    let shutdown = Arc::clone(&self.shutdown);
+                    let start_time = self.start_time;
+                    tokio::spawn(async move {
+                        HintShellServer::handle_client(stream, engine, start_time, shutdown).await;
+                    });
                 }
                 _ = self.shutdown.notified() => {
                     break;
@@ -279,8 +290,12 @@ impl HintShellServer {
         Ok(())
     }
 
-    async fn handle_client<S>(&self, stream: S)
-    where
+    async fn handle_client<S>(
+        stream: S,
+        engine: Arc<SuggestionEngine>,
+        start_time: Instant,
+        shutdown: Arc<Notify>,
+    ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let (reader, mut writer) = tokio::io::split(stream);
@@ -298,7 +313,15 @@ impl HintShellServer {
                 let response = match serde_json::from_str::<HintShellRequest>(trimmed) {
                     Ok(request) => {
                         debug!("Processing request: {:?}", request);
-                        process_request(request, &self.engine, self.start_time, &self.shutdown)
+                        let engine = Arc::clone(&engine);
+                        let shutdown = Arc::clone(&shutdown);
+                        tokio::task::spawn_blocking(move || {
+                            process_request(request, &engine, start_time, &shutdown)
+                        })
+                        .await
+                        .unwrap_or_else(|e| {
+                            HintShellResponse::err(&format!("Request failed: {}", e))
+                        })
                     }
                     Err(e) => {
                         error!("Invalid JSON: {}", e);

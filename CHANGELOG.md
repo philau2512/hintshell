@@ -2,6 +2,16 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.11] - 2026-08-21
+
+### Improvements
+- **PowerShell overlay responsiveness**: Remove intentional key-handler delays, bound named-pipe connection and response waits, and cancel predictor IPC when its deadline expires so typing, pasting, and Enter remain responsive.
+- **Daemon concurrency**: Process named-pipe clients independently so a slow client does not delay suggestion requests from other terminal sessions.
+- **Interactive regression harness**: Run manual checkpoints through the real PSReadLine input loop, allowing overlay suggestions and registered key handlers to be tested in a disposable PowerShell session.
+
+### Testing
+- **Overlay coverage**: Add operator-driven checks for slow and rapid typing, single-line and multiline paste, plus Enter behavior when the daemon is available or offline.
+
 ## [0.3.10] - 2026-08-21
 
 ### New Features

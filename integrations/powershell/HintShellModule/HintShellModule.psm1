@@ -147,7 +147,6 @@ function Start-HintShell {
             return
         }
         [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
-        Start-Sleep -Milliseconds 100
         if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
         $bufRef = $null; $curRef = $null
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
@@ -182,7 +181,6 @@ function Start-HintShell {
         }
         if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
         [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
-        Start-Sleep -Milliseconds 100
         if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
         Invoke-HSAutoSuggest
     }
@@ -197,7 +195,6 @@ function Start-HintShell {
         }
         if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
         [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
-        Start-Sleep -Milliseconds 80
         if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
         Invoke-HSAutoSuggest
     }
@@ -205,12 +202,15 @@ function Start-HintShell {
     # --- Enter ---
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
         if ($script:HS.IsVisible) { Clear-HSOverlay }
-        Reset-HSState
         $bufRef = $null; $curRef = $null
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
         $cmd = "$bufRef"
+        if (Test-HSMultilineBuffer -Typed $cmd) {
+            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+        }
+        Reset-HSState
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        if (-not [string]::IsNullOrWhiteSpace($cmd)) { Invoke-HSRecord -Command $cmd }
+        if (-not [string]::IsNullOrWhiteSpace($cmd)) { Invoke-HSRecord -Command $cmd -Asynchronous }
     }
 
     # --- Ctrl+Space: manual trigger ---
