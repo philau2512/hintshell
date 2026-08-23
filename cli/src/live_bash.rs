@@ -557,7 +557,22 @@ fn supports_live_overlay() -> bool {
     }
 
     let term = env::var("TERM").unwrap_or_default().to_ascii_lowercase();
-    !term.is_empty() && term != "dumb"
+    if term == "dumb" {
+        return false;
+    }
+    if !term.is_empty() {
+        return true;
+    }
+
+    // On Windows, ConPTY is standard and supported across modern Windows terminals.
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(windows)]

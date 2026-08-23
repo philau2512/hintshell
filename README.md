@@ -126,9 +126,6 @@ The emitted profile has this shape (the rcfile path reflects your own user direc
   "Git Bash Fast + HintShell": {
     "path": "C:\\Users\\<you>\\.hintshell\\bin\\hintshell.exe",
     "args": ["bash", "--rcfile", "/c/Users/<you>/.hintshell/git-bash-fast.bashrc", "-i"],
-    "env": {
-      "TERM": "xterm-256color"
-    },
     "icon": "terminal-bash"
   }
 }

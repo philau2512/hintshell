@@ -31,7 +31,7 @@ const SOCKET_PATH: &str = "/tmp/hintshell.sock";
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -140,7 +140,7 @@ enum HistoryCommands {
 async fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
+    match cli.command.unwrap_or(Commands::Bash { args: Vec::new() }) {
         Commands::Start => {
             println!("▶ hintshell start");
             start_daemon();
@@ -492,9 +492,6 @@ Add this profile to VS Code user settings, then select it manually:
   "Git Bash Fast + HintShell": {{
     "path": "{cli}",
     "args": ["bash", "--rcfile", "{rcfile}", "-i"],
-    "env": {{
-      "TERM": "xterm-256color"
-    }},
     "icon": "terminal-bash"
   }}
 }}
@@ -522,8 +519,8 @@ mod tests {
             .replace('\\', "\\\\");
         assert!(profile.contains(&format!(r#""path": "{expected_cli}""#)));
         assert!(profile.contains(r#""args": ["bash", "--rcfile", "/c/Users/Example/.hintshell/git-bash-fast.bashrc", "-i"]"#));
-        assert!(profile.contains(r#""env": {"#));
-        assert!(profile.contains(r#""TERM": "xterm-256color""#));
+        assert!(!profile.contains(r#""env": {"#));
+        assert!(!profile.contains(r#""TERM": "xterm-256color""#));
         assert!(!profile.contains("--norc"));
         assert!(!profile.contains("--noprofile"));
         assert!(!profile.contains("exec bash"));
