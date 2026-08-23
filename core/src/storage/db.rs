@@ -128,6 +128,16 @@ impl HistoryStore {
             )?;
         }
 
+        // Clean up trailing \r \n in existing database rows
+        let _ = conn.execute(
+            "UPDATE history SET command = TRIM(REPLACE(REPLACE(command, CHAR(13), ' '), CHAR(10), ' ')) WHERE command LIKE '%' || CHAR(10) || '%' OR command LIKE '%' || CHAR(13) || '%'",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE history_context SET command = TRIM(REPLACE(REPLACE(command, CHAR(13), ' '), CHAR(10), ' ')) WHERE command LIKE '%' || CHAR(10) || '%' OR command LIKE '%' || CHAR(13) || '%'",
+            [],
+        );
+
         Ok(())
     }
 
@@ -138,6 +148,10 @@ impl HistoryStore {
         directory: Option<&str>,
         shell: Option<&str>,
     ) -> SqlResult<()> {
+        let command = command.trim_end_matches(['\r', '\n']).trim();
+        if command.is_empty() {
+            return Ok(());
+        }
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
 

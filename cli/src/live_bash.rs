@@ -24,7 +24,6 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 const QUERY_DEBOUNCE: Duration = Duration::from_millis(40);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(180);
 const TAB_ACCEPT_CLEAR_DELAY: Duration = Duration::from_millis(8);
-const MAX_VISIBLE_SUGGESTIONS: usize = 6;
 
 fn trace_startup_enabled(value: Option<&str>) -> bool {
     matches!(value, Some("1"))
@@ -913,10 +912,11 @@ fn handle_key(
                     // the selected text immediately can race that redraw through ConPTY,
                     // leaving the old prefix on its own visual line. Let readline finish
                     // the discard before inserting the accepted suggestion.
+                    let clean_command = command.trim_end_matches(['\r', '\n']).replace(['\r', '\n'], " ");
                     write_to_shell(writer, b"\x15")?;
                     thread::sleep(TAB_ACCEPT_CLEAR_DELAY);
-                    write_to_shell(writer, command.as_bytes())?;
-                    state.buffer = command;
+                    write_to_shell(writer, clean_command.as_bytes())?;
+                    state.buffer = clean_command;
                     state.generation = state.generation.wrapping_add(1);
                 }
             }
@@ -987,6 +987,53 @@ fn handle_key(
             state.tracking_valid = false;
             state.generation = state.generation.wrapping_add(1);
             write_to_shell(writer, b"\x1a")?;
+        }
+        // Right Arrow or End: accept ghost text / full suggestion if at end of buffer
+        KeyCode::Right | KeyCode::End if !state.suggestions.is_empty() && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::CONTROL) => {
+            if let Some(cmd) = state.current().map(|s| s.command.clone()) {
+                let clean_cmd = cmd.trim_end_matches(['\r', '\n']).replace(['\r', '\n'], " ");
+                if clean_cmd.to_ascii_lowercase().starts_with(&state.buffer.to_ascii_lowercase()) && clean_cmd.len() > state.buffer.len() {
+                    clear_overlay(state, output)?;
+                    let remaining = &clean_cmd[state.buffer.len()..];
+                    write_to_shell(writer, remaining.as_bytes())?;
+                    state.buffer = clean_cmd;
+                    state.clear();
+                    state.generation = state.generation.wrapping_add(1);
+                    return Ok(());
+                }
+            }
+            forward_and_invalidate(state, writer, output, if key.code == KeyCode::Right { b"\x1b[C" } else { b"\x05" })?;
+        }
+        // Alt + Right or Ctrl + Right: accept NEXT WORD of suggestion
+        KeyCode::Right if !state.suggestions.is_empty() && (key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::CONTROL)) => {
+            if let Some(cmd) = state.current().map(|s| s.command.clone()) {
+                let clean_cmd = cmd.trim_end_matches(['\r', '\n']).replace(['\r', '\n'], " ");
+                if clean_cmd.to_ascii_lowercase().starts_with(&state.buffer.to_ascii_lowercase()) && clean_cmd.len() > state.buffer.len() {
+                    clear_overlay(state, output)?;
+                    let remaining = &clean_cmd[state.buffer.len()..];
+                    // Take leading whitespace + next word
+                    let mut next_chunk = String::new();
+                    let mut seen_word = false;
+                    for ch in remaining.chars() {
+                        if ch.is_whitespace() {
+                            if seen_word {
+                                break;
+                            }
+                            next_chunk.push(ch);
+                        } else {
+                            seen_word = true;
+                            next_chunk.push(ch);
+                        }
+                    }
+                    if !next_chunk.is_empty() {
+                        write_to_shell(writer, next_chunk.as_bytes())?;
+                        state.buffer.push_str(&next_chunk);
+                        request_suggestions(state, query_tx);
+                        return Ok(());
+                    }
+                }
+            }
+            forward_and_invalidate(state, writer, output, b"\x1b[1;5C")?;
         }
         KeyCode::Left => forward_and_invalidate(state, writer, output, b"\x1b[D")?,
         KeyCode::Right => forward_and_invalidate(state, writer, output, b"\x1b[C")?,
@@ -1129,13 +1176,17 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         return Ok(());
     }
 
+    let config = crate::config::HintShellConfig::load();
+    let is_rainbow = config.is_rainbow();
+    let border_color_ansi = config.border_ansi_code();
+
     let (terminal_width, terminal_height) = size().unwrap_or((100, 30));
     let width = usize::from(terminal_width).clamp(44, 78);
     let inner_width = overlay_inner_width(width);
     let command_width = overlay_command_width(width);
     let total = state.suggestions.len();
     let (cur_col, cur_row) = position().unwrap_or((0, 0));
-    let shown = visible_suggestion_rows(cur_row, terminal_height, total);
+    let shown = visible_suggestion_rows(cur_row, terminal_height, total, config.max_visible);
     if shown == 0 {
         return Ok(());
     }
@@ -1145,11 +1196,36 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let viewport_end = viewport_start + shown;
     let mut frame = String::new();
     let counter = format!(" {}/{} ", selected + 1, total);
-    frame.push_str(&format!(
-        "\x1b[1B\r\x1b[2K\x1b[38;5;141m╭{}{}╮\x1b[0m",
-        "─".repeat(inner_width.saturating_sub(counter.len())),
-        counter
-    ));
+
+    // Rainbow colors array for Gemini style gradient: Blue -> Cyan -> Green -> Yellow -> Orange -> Pink -> Purple
+    let rainbow_colors = [
+        "\x1b[38;5;75m",  // Blue
+        "\x1b[38;5;51m",  // Cyan
+        "\x1b[38;5;48m",  // Green
+        "\x1b[38;5;220m", // Yellow
+        "\x1b[38;5;208m", // Orange
+        "\x1b[38;5;212m", // Pink
+        "\x1b[38;5;141m", // Purple
+        "\x1b[38;5;69m",  // Indigo
+    ];
+
+    if is_rainbow {
+        let repeat_dashes = inner_width.saturating_sub(counter.len());
+        let mut top_line = String::new();
+        top_line.push_str("\x1b[38;5;75m╭");
+        for (i, _) in (0..repeat_dashes).enumerate() {
+            let color = rainbow_colors[i % rainbow_colors.len()];
+            top_line.push_str(&format!("{color}─"));
+        }
+        top_line.push_str(&format!("\x1b[38;5;141m{counter}╮\x1b[0m"));
+        frame.push_str(&format!("\x1b[1B\r\x1b[2K{top_line}"));
+    } else {
+        frame.push_str(&format!(
+            "\x1b[1B\r\x1b[2K{border_color_ansi}╭{}{}╮\x1b[0m",
+            "─".repeat(inner_width.saturating_sub(counter.len())),
+            counter
+        ));
+    }
 
     for (index, suggestion) in state.suggestions[viewport_start..viewport_end]
         .iter()
@@ -1158,16 +1234,30 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         let suggestion_index = viewport_start + index;
         let selected_row = suggestion_index == selected;
         let command = fit_width(&suggestion.command, command_width);
-        let source = fit_width(&suggestion.source, 20);
+        let source_clean = fit_width(&suggestion.source, 20);
+        let source_pad = 20usize.saturating_sub(source_clean.chars().count());
+        let source_formatted = format!("{}{}", source_clean, " ".repeat(source_pad));
         let marker = if selected_row { "▶" } else { " " };
-        let row = format!(" {marker} {command:<command_width$}  {source:<20} ",);
+        let highlighted_command = highlight_match(&command, &state.buffer, selected_row, command_width);
+
+        let row_border_left = if is_rainbow {
+            rainbow_colors[index % rainbow_colors.len()]
+        } else {
+            border_color_ansi
+        };
+        let row_border_right = if is_rainbow {
+            rainbow_colors[(index + 3) % rainbow_colors.len()]
+        } else {
+            border_color_ansi
+        };
+
         if selected_row {
             frame.push_str(&format!(
-                "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[48;5;60m\x1b[38;5;255m{row}\x1b[0m\x1b[38;5;141m│\x1b[0m"
+                "\x1b[1B\r\x1b[2K{row_border_left}│\x1b[48;5;60m\x1b[38;5;255m {marker} {highlighted_command}  {source_formatted} \x1b[0m{row_border_right}│\x1b[0m"
             ));
         } else {
             frame.push_str(&format!(
-                "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[0m{row}\x1b[38;5;141m│\x1b[0m"
+                "\x1b[1B\r\x1b[2K{row_border_left}│\x1b[0m {marker} {highlighted_command}  {source_formatted} {row_border_right}│\x1b[0m"
             ));
         }
     }
@@ -1178,14 +1268,28 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .and_then(|suggestion| suggestion.description.as_deref())
         .unwrap_or("history suggestion");
     let description = fit_width(description, inner_width.saturating_sub(2));
+    let desc_border = if is_rainbow { "\x1b[38;5;212m" } else { border_color_ansi };
+    let desc_pad = inner_width.saturating_sub(description.chars().count() + 2);
     frame.push_str(&format!(
-        "\x1b[1B\r\x1b[2K\x1b[38;5;141m│\x1b[38;5;244m  {description:<desc_width$}\x1b[38;5;141m│\x1b[0m",
-        desc_width = inner_width.saturating_sub(2)
+        "\x1b[1B\r\x1b[2K{desc_border}│\x1b[38;5;244m  {description}{}{desc_border}│\x1b[0m",
+        " ".repeat(desc_pad)
     ));
-    frame.push_str(&format!(
-        "\x1b[1B\r\x1b[2K\x1b[38;5;141m╰{}╯\x1b[0m",
-        "─".repeat(inner_width)
-    ));
+
+    if is_rainbow {
+        let mut bot_line = String::new();
+        bot_line.push_str("\x1b[38;5;141m╰");
+        for (i, _) in (0..inner_width).enumerate() {
+            let color = rainbow_colors[(rainbow_colors.len() - 1 - (i % rainbow_colors.len())) % rainbow_colors.len()];
+            bot_line.push_str(&format!("{color}─"));
+        }
+        bot_line.push_str("\x1b[38;5;75m╯\x1b[0m");
+        frame.push_str(&format!("\x1b[1B\r\x1b[2K{bot_line}"));
+    } else {
+        frame.push_str(&format!(
+            "\x1b[1B\r\x1b[2K{border_color_ansi}╰{}╯\x1b[0m",
+            "─".repeat(inner_width)
+        ));
+    }
 
     let mut stdout = output
         .lock()
@@ -1202,6 +1306,35 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     Ok(())
 }
 
+fn highlight_match(command: &str, buffer: &str, is_selected: bool, target_width: usize) -> String {
+    let clean_cmd = command.replace(['\r', '\n', '\t'], " ");
+    let buf_lower = buffer.trim().to_ascii_lowercase();
+    let cmd_lower = clean_cmd.to_ascii_lowercase();
+    if buf_lower.is_empty() {
+        return format!("{:<width$}", clean_cmd, width = target_width);
+    }
+
+    if let Some(pos) = cmd_lower.find(&buf_lower) {
+        let match_len = buf_lower.len();
+        let before = &clean_cmd[..pos];
+        let matched = &clean_cmd[pos..pos + match_len];
+        let after = &clean_cmd[pos + match_len..];
+
+        let reset = if is_selected {
+            "\x1b[48;5;60m\x1b[38;5;255m"
+        } else {
+            "\x1b[0m"
+        };
+        // Yellow bold highlight
+        let highlight_code = "\x1b[1;38;5;220m";
+        let display_str = format!("{before}{highlight_code}{matched}{reset}{after}");
+        let pad_len = target_width.saturating_sub(clean_cmd.chars().count());
+        format!("{}{}", display_str, " ".repeat(pad_len))
+    } else {
+        format!("{:<width$}", clean_cmd, width = target_width)
+    }
+}
+
 fn overlay_inner_width(width: usize) -> usize {
     width.saturating_sub(2)
 }
@@ -1210,10 +1343,10 @@ fn overlay_command_width(width: usize) -> usize {
     overlay_inner_width(width).saturating_sub(26)
 }
 
-fn visible_suggestion_rows(cursor_row: u16, terminal_height: u16, total: usize) -> usize {
+fn visible_suggestion_rows(cursor_row: u16, terminal_height: u16, total: usize, max_visible: usize) -> usize {
     let rows_below_prompt = terminal_height.saturating_sub(cursor_row.saturating_add(1));
     let rows_for_suggestions = usize::from(rows_below_prompt.saturating_sub(3));
-    total.min(MAX_VISIBLE_SUGGESTIONS).min(rows_for_suggestions)
+    total.min(max_visible.clamp(3, 10)).min(rows_for_suggestions)
 }
 
 fn viewport_start(selected: usize, total: usize, viewport_size: usize) -> usize {
@@ -1228,8 +1361,9 @@ fn viewport_start(selected: usize, total: usize, viewport_size: usize) -> usize 
 }
 
 fn fit_width(text: &str, max_width: usize) -> String {
+    let sanitized = text.replace(['\r', '\n', '\t'], " ");
     let mut result = String::new();
-    for character in text.chars() {
+    for character in sanitized.chars() {
         if result.chars().count() >= max_width.saturating_sub(1) {
             result.push('…');
             return result;
@@ -1264,9 +1398,9 @@ mod tests {
 
     #[test]
     fn overlay_caps_rows_to_remaining_space_without_scrolling() {
-        assert_eq!(visible_suggestion_rows(3, 30, 12), 6);
-        assert_eq!(visible_suggestion_rows(25, 30, 12), 1);
-        assert_eq!(visible_suggestion_rows(26, 30, 12), 0);
+        assert_eq!(visible_suggestion_rows(3, 30, 12, 6), 6);
+        assert_eq!(visible_suggestion_rows(25, 30, 12, 6), 1);
+        assert_eq!(visible_suggestion_rows(26, 30, 12, 6), 0);
     }
 
     #[test]

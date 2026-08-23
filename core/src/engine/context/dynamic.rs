@@ -11,20 +11,165 @@ pub fn generate_dynamic_candidates(
     workspace: &WorkspaceFacts,
     runner: &ProcessRunner,
 ) -> Vec<ContextCandidate> {
+    let mut candidates = Vec::new();
+
+    // 1. Tech Stack / Project-level smart suggestions
+    candidates.extend(project_stack_candidates(context, workspace));
+
     let Some(command) = context.command.as_deref() else {
-        return Vec::new();
+        return candidates;
     };
 
     match command {
-        "git" if workspace.has(".git") => git_candidates(context, cwd, runner),
-        "npm" | "pnpm" | "yarn" | "bun" if workspace.has("package.json") => {
-            package_script_candidates(context, workspace)
+        "git" if workspace.has(".git") => {
+            candidates.extend(git_candidates(context, cwd, runner));
+            candidates.extend(git_state_candidates(context, cwd, workspace));
         }
-        "docker" if docker_subcommand(context).is_some() => docker_candidates(context, cwd, runner),
-        "ssh" | "scp" | "rsync" => ssh_candidates(context),
-        "z" | "zoxide" => zoxide_candidates(context, cwd, runner),
-        _ => Vec::new(),
+        "npm" | "pnpm" | "yarn" | "bun" if workspace.has("package.json") => {
+            candidates.extend(package_script_candidates(context, workspace));
+        }
+        "docker" if docker_subcommand(context).is_some() => {
+            candidates.extend(docker_candidates(context, cwd, runner));
+        }
+        "ssh" | "scp" | "rsync" => candidates.extend(ssh_candidates(context)),
+        "z" | "zoxide" => candidates.extend(zoxide_candidates(context, cwd, runner)),
+        _ => {}
     }
+
+    candidates
+}
+
+fn project_stack_candidates(
+    context: &CommandContext,
+    workspace: &WorkspaceFacts,
+) -> Vec<ContextCandidate> {
+    let mut list = Vec::new();
+    let token = context.input.trim();
+
+    // Package Managers
+    if workspace.has("pnpm-lock.yaml") {
+        for cmd in &["pnpm dev", "pnpm install", "pnpm build", "pnpm test", "pnpm run"] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some("pnpm project command".to_string()),
+                    source: "pnpm".to_string(),
+                    score: 24.0,
+                });
+            }
+        }
+    } else if workspace.has("bun.lockb") || workspace.has("bun.lock") {
+        for cmd in &["bun run dev", "bun install", "bun test", "bun run build"] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some("bun project command".to_string()),
+                    source: "bun".to_string(),
+                    score: 24.0,
+                });
+            }
+        }
+    } else if workspace.has("yarn.lock") {
+        for cmd in &["yarn dev", "yarn install", "yarn build", "yarn test"] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some("yarn project command".to_string()),
+                    source: "yarn".to_string(),
+                    score: 24.0,
+                });
+            }
+        }
+    }
+
+    // Cargo / Rust
+    if workspace.has("Cargo.toml") {
+        for cmd in &["cargo check", "cargo test", "cargo run", "cargo build --release", "cargo clippy"] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some("cargo project command".to_string()),
+                    source: "cargo".to_string(),
+                    score: 24.0,
+                });
+            }
+        }
+    }
+
+    // Docker compose
+    if workspace.has("docker-compose.yml") || workspace.has("docker-compose.yaml") || workspace.has("compose.yml") || workspace.has("compose.yaml") {
+        for cmd in &["docker compose up -d", "docker compose down", "docker compose logs -f", "docker compose ps"] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some("docker compose stack".to_string()),
+                    source: "docker".to_string(),
+                    score: 23.0,
+                });
+            }
+        }
+    }
+
+    list
+}
+
+fn git_state_candidates(
+    context: &CommandContext,
+    cwd: &Path,
+    workspace: &WorkspaceFacts,
+) -> Vec<ContextCandidate> {
+    let mut list = Vec::new();
+    let Some(root) = workspace.root.as_deref().or(Some(cwd)) else {
+        return list;
+    };
+    let git_dir = root.join(".git");
+    if !git_dir.exists() {
+        return list;
+    }
+
+    let token = context.input.trim();
+
+    // Check branch name from HEAD
+    let mut branch = String::new();
+    if let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD")) {
+        if let Some(name) = head.trim().strip_prefix("ref: refs/heads/") {
+            branch = name.to_string();
+        }
+    }
+
+    // Fast check if working tree or index exists
+    let index_file = git_dir.join("index");
+    let has_index = index_file.exists();
+
+    if has_index {
+        let push_cmd = if !branch.is_empty() {
+            format!("git push origin {branch}")
+        } else {
+            "git push".to_string()
+        };
+
+        for (cmd, desc) in &[
+            ("git status", "show working tree status"),
+            ("git add .", "stage all changes"),
+            ("git commit -m \"", "commit staged changes"),
+            ("git diff", "view unstaged changes"),
+            (&push_cmd, "push branch to remote"),
+            ("git pull", "pull latest from remote"),
+            ("git stash", "stash dirty working tree"),
+            ("git stash pop", "restore stashed changes"),
+        ] {
+            if token.is_empty() || cmd.starts_with(token) || cmd.contains(token) {
+                list.push(ContextCandidate {
+                    command: cmd.to_string(),
+                    description: Some(desc.to_string()),
+                    source: "git".to_string(),
+                    score: 25.0,
+                });
+            }
+        }
+    }
+
+    list
 }
 
 fn git_candidates(

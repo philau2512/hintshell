@@ -69,9 +69,13 @@ impl SuggestionEngine {
         let all_matches: Vec<(CommandEntry, i64)> = all_commands
             .into_iter()
             .filter_map(|entry| {
-                self.matcher
-                    .fuzzy_match(&entry.command, input)
-                    .map(|score| (entry, score))
+                if let Some(score) = self.matcher.fuzzy_match(&entry.command, input) {
+                    Some((entry, score))
+                } else if typo_tolerance_match(&entry.command, input) {
+                    Some((entry, 10))
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -279,6 +283,59 @@ impl SuggestionEngine {
     }
 }
 
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+
+    let mut prev_row: Vec<usize> = (0..=b_len).collect();
+    let mut curr_row: Vec<usize> = vec![0; b_len + 1];
+
+    for (i, ca) in a.chars().enumerate() {
+        curr_row[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr_row[j + 1] = (curr_row[j] + 1)
+                .min(prev_row[j + 1] + 1)
+                .min(prev_row[j] + cost);
+        }
+        prev_row.copy_from_slice(&curr_row);
+    }
+
+    prev_row[b_len]
+}
+
+fn typo_tolerance_match(command: &str, input: &str) -> bool {
+    let input = input.trim();
+    if input.len() < 3 {
+        return false;
+    }
+    let input_first = input.split_whitespace().next().unwrap_or_default();
+    let cmd_first = command.split_whitespace().next().unwrap_or_default();
+    if input_first.is_empty() || cmd_first.is_empty() {
+        return false;
+    }
+
+    // If typing single word command with typo (e.g. gti -> git, dcoker -> docker)
+    if !input.contains(' ') {
+        levenshtein_distance(input_first, cmd_first) <= 1
+    } else {
+        // If input has multiple words: check first word typo AND matching rest
+        if levenshtein_distance(input_first, cmd_first) <= 1 {
+            let input_rest = input[input_first.len()..].trim_start();
+            let cmd_rest = command[cmd_first.len()..].trim_start();
+            cmd_rest.starts_with(input_rest) || cmd_rest.contains(input_rest)
+        } else {
+            false
+        }
+    }
+}
+
 fn normalize_directory_key(directory: &str) -> String {
     shell_cwd_to_path(directory).to_string_lossy().to_string()
 }
@@ -330,13 +387,15 @@ fn match_tier(suggestion: &Suggestion, input: &str) -> u8 {
         0
     } else if matches!(
         suggestion.source.as_str(),
-        "path" | "git" | "npm" | "docker" | "ssh" | "zoxide"
+        "path" | "git" | "npm" | "docker" | "ssh" | "zoxide" | "cargo" | "pnpm" | "bun" | "yarn"
     ) {
         1
     } else if cmd_lower.contains(&input_lower) {
         2
-    } else {
+    } else if typo_tolerance_match(&cmd_lower, &input_lower) {
         3
+    } else {
+        4
     }
 }
 

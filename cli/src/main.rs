@@ -6,6 +6,7 @@ use hintshell_core::api::protocol::{HintShellRequest, HintShellResponse};
 use std::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod config;
 mod live_bash;
 mod shell;
 
