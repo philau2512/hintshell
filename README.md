@@ -170,8 +170,11 @@ Each request includes the current working directory and shell. HintShell merges 
 HintShell creates a configuration file at `~/.hintshell/config.toml` automatically on initial setup:
 
 ```toml
-# Popup border color: "purple" (default), "rainbow" / "gemini", "blue", "cyan", "green", "yellow", "orange", "pink", "magenta", "minimal"
-border_color = "purple"
+# Popup border color palette:
+# - "apple" / "siri" / "glow" (Apple Intelligence 24-bit TrueColor Cyber Glow)
+# - "rainbow" / "gemini" (Vibrant multi-color spectrum)
+# - Solid tones: "purple" (default), "blue", "cyan", "green", "yellow", "orange", "pink", "magenta", "minimal"
+border_color = "apple"
 
 # Maximum number of suggestions shown in popup overlay (default: 6)
 max_visible = 6

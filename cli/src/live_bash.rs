@@ -1178,6 +1178,7 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
 
     let config = crate::config::HintShellConfig::load();
     let is_rainbow = config.is_rainbow();
+    let is_apple = config.is_apple();
     let border_color_ansi = config.border_ansi_code();
 
     let (terminal_width, terminal_height) = size().unwrap_or((100, 30));
@@ -1209,7 +1210,24 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         "\x1b[38;5;69m",  // Indigo
     ];
 
-    if is_rainbow {
+    let perimeter_top = inner_width.saturating_sub(counter.len());
+    let perimeter_right = shown + 1;
+    let perimeter_bottom = inner_width;
+    let perimeter_left = shown + 1;
+    let total_perimeter = (perimeter_top + perimeter_right + perimeter_bottom + perimeter_left).max(1);
+
+    if is_apple {
+        let mut top_line = String::new();
+        let c_corner = rgb_ansi(apple_perimeter_color(0, total_perimeter));
+        top_line.push_str(&format!("{c_corner}╭"));
+        for i in 0..perimeter_top {
+            let c = rgb_ansi(apple_perimeter_color(1 + i, total_perimeter));
+            top_line.push_str(&format!("{c}─"));
+        }
+        let c_end = rgb_ansi(apple_perimeter_color(perimeter_top, total_perimeter));
+        top_line.push_str(&format!("\x1b[1m\x1b[38;2;255;255;255m{counter}{c_end}╮\x1b[0m"));
+        frame.push_str(&format!("\x1b[1B\r\x1b[2K{top_line}"));
+    } else if is_rainbow {
         let repeat_dashes = inner_width.saturating_sub(counter.len());
         let mut top_line = String::new();
         top_line.push_str("\x1b[38;5;75m╭");
@@ -1240,20 +1258,30 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         let marker = if selected_row { "▶" } else { " " };
         let highlighted_command = highlight_match(&command, &state.buffer, selected_row, command_width);
 
-        let row_border_left = if is_rainbow {
-            rainbow_colors[index % rainbow_colors.len()]
+        let (row_border_left, row_border_right) = if is_apple {
+            let left_step = total_perimeter.saturating_sub(1 + index);
+            let right_step = perimeter_top + 1 + index;
+            (
+                rgb_ansi(apple_perimeter_color(left_step, total_perimeter)),
+                rgb_ansi(apple_perimeter_color(right_step, total_perimeter)),
+            )
+        } else if is_rainbow {
+            (
+                rainbow_colors[index % rainbow_colors.len()].to_string(),
+                rainbow_colors[(index + 3) % rainbow_colors.len()].to_string(),
+            )
         } else {
-            border_color_ansi
-        };
-        let row_border_right = if is_rainbow {
-            rainbow_colors[(index + 3) % rainbow_colors.len()]
-        } else {
-            border_color_ansi
+            (border_color_ansi.to_string(), border_color_ansi.to_string())
         };
 
         if selected_row {
+            let selected_bg = if is_apple {
+                "\x1b[48;2;54;87;112m\x1b[38;2;255;255;255m\x1b[1m" // Apple Intelligence frosted Siri-blue selection
+            } else {
+                "\x1b[48;5;60m\x1b[38;5;255m"
+            };
             frame.push_str(&format!(
-                "\x1b[1B\r\x1b[2K{row_border_left}│\x1b[48;5;60m\x1b[38;5;255m {marker} {highlighted_command}  {source_formatted} \x1b[0m{row_border_right}│\x1b[0m"
+                "\x1b[1B\r\x1b[2K{row_border_left}│{selected_bg} {marker} {highlighted_command}  {source_formatted} \x1b[0m{row_border_right}│\x1b[0m"
             ));
         } else {
             frame.push_str(&format!(
@@ -1268,14 +1296,39 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
         .and_then(|suggestion| suggestion.description.as_deref())
         .unwrap_or("history suggestion");
     let description = fit_width(description, inner_width.saturating_sub(2));
-    let desc_border = if is_rainbow { "\x1b[38;5;212m" } else { border_color_ansi };
+    let (desc_border_left, desc_border_right) = if is_apple {
+        let left_step = total_perimeter.saturating_sub(1 + shown);
+        let right_step = perimeter_top + 1 + shown;
+        (
+            rgb_ansi(apple_perimeter_color(left_step, total_perimeter)),
+            rgb_ansi(apple_perimeter_color(right_step, total_perimeter)),
+        )
+    } else if is_rainbow {
+        ("\x1b[38;5;212m".to_string(), "\x1b[38;5;212m".to_string())
+    } else {
+        (border_color_ansi.to_string(), border_color_ansi.to_string())
+    };
     let desc_pad = inner_width.saturating_sub(description.chars().count() + 2);
     frame.push_str(&format!(
-        "\x1b[1B\r\x1b[2K{desc_border}│\x1b[38;5;244m  {description}{}{desc_border}│\x1b[0m",
+        "\x1b[1B\r\x1b[2K{desc_border_left}│\x1b[38;5;244m  {description}{}{desc_border_right}│\x1b[0m",
         " ".repeat(desc_pad)
     ));
 
-    if is_rainbow {
+    if is_apple {
+        let mut bot_line = String::new();
+        let bottom_start_step = perimeter_top + perimeter_right;
+        let c_corner_left = rgb_ansi(apple_perimeter_color(total_perimeter.saturating_sub(shown + 2), total_perimeter));
+        let c_corner_right = rgb_ansi(apple_perimeter_color(bottom_start_step, total_perimeter));
+        
+        bot_line.push_str(&format!("{c_corner_left}╰"));
+        for i in 0..perimeter_bottom {
+            let step = bottom_start_step + (perimeter_bottom - 1 - i);
+            let c = rgb_ansi(apple_perimeter_color(step, total_perimeter));
+            bot_line.push_str(&format!("{c}─"));
+        }
+        bot_line.push_str(&format!("{c_corner_right}╯\x1b[0m"));
+        frame.push_str(&format!("\x1b[1B\r\x1b[2K{bot_line}"));
+    } else if is_rainbow {
         let mut bot_line = String::new();
         bot_line.push_str("\x1b[38;5;141m╰");
         for (i, _) in (0..inner_width).enumerate() {
@@ -1306,6 +1359,41 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     Ok(())
 }
 
+// Apple Intelligence Glow: Interpolates smoothly across a perimeter of length `total_steps`
+// Key glow colors: Cyan (#00f5d4) -> Siri Blue (#00bbf9) -> Violet (#7209b7) -> Magenta (#f72585) -> Coral/Amber (#ff9e00)
+fn apple_perimeter_color(step: usize, total_steps: usize) -> (u8, u8, u8) {
+    let stops: &[(f32, (u8, u8, u8))] = &[
+        (0.00, (0, 245, 212)),   // 1. Neon Cyan
+        (0.20, (0, 187, 249)),   // 2. Siri Blue
+        (0.40, (114, 9, 183)),   // 3. Electric Violet
+        (0.65, (247, 37, 133)),  // 4. Hot Apple Magenta
+        (0.85, (255, 158, 0)),   // 5. Warm Coral Glow
+        (1.00, (0, 245, 212)),   // 6. Wrap around to Neon Cyan
+    ];
+
+    if total_steps == 0 {
+        return (0, 245, 212);
+    }
+
+    let progress = (step as f32 / total_steps as f32).clamp(0.0, 1.0);
+    for window in stops.windows(2) {
+        let (p0, c0) = window[0];
+        let (p1, c1) = window[1];
+        if progress >= p0 && progress <= p1 {
+            let t = if (p1 - p0) > 0.0 { (progress - p0) / (p1 - p0) } else { 0.0 };
+            let r = (c0.0 as f32 + t * (c1.0 as f32 - c0.0 as f32)).round() as u8;
+            let g = (c0.1 as f32 + t * (c1.1 as f32 - c0.1 as f32)).round() as u8;
+            let b = (c0.2 as f32 + t * (c1.2 as f32 - c0.2 as f32)).round() as u8;
+            return (r, g, b);
+        }
+    }
+    (0, 245, 212)
+}
+
+fn rgb_ansi(rgb: (u8, u8, u8)) -> String {
+    format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+}
+
 fn highlight_match(command: &str, buffer: &str, is_selected: bool, target_width: usize) -> String {
     let clean_cmd = command.replace(['\r', '\n', '\t'], " ");
     let buf_lower = buffer.trim().to_ascii_lowercase();
@@ -1321,7 +1409,7 @@ fn highlight_match(command: &str, buffer: &str, is_selected: bool, target_width:
         let after = &clean_cmd[pos + match_len..];
 
         let reset = if is_selected {
-            "\x1b[48;5;60m\x1b[38;5;255m"
+            "\x1b[48;2;54;87;112m\x1b[38;2;255;255;255m\x1b[1m"
         } else {
             "\x1b[0m"
         };

@@ -65,6 +65,13 @@ impl HintShellConfig {
         )
     }
 
+    pub fn is_apple(&self) -> bool {
+        matches!(
+            self.border_color.to_lowercase().as_str(),
+            "apple" | "siri" | "apple-intelligence" | "glow" | "neon"
+        )
+    }
+
     pub fn border_ansi_code(&self) -> &'static str {
         match self.border_color.to_lowercase().as_str() {
             "blue" => "\x1b[38;5;75m",          // Deep sky / vibrant blue
@@ -76,6 +83,7 @@ impl HintShellConfig {
             "magenta" => "\x1b[38;5;201m",      // Cyberpunk magenta / hot pink
             "minimal" | "gray" | "grey" => "\x1b[38;5;244m",
             "red" => "\x1b[38;5;203m",
+            "apple" | "siri" | "apple-intelligence" | "glow" | "neon" => "\x1b[38;2;0;245;212m", // Apple Intelligence Neon Cyan
             "rainbow" | "gemini" | "gradient" | "aurora" => "\x1b[38;5;141m",
             _ => "\x1b[38;5;141m",              // Purple default
         }

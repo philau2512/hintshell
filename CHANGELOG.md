@@ -2,6 +2,14 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.15] - 2026-08-22
+
+### New Features
+- **Apple Intelligence Glow Theme**:
+  - Add `border_color = "apple"` with aliases `siri`, `apple-intelligence`, `glow`, and `neon`.
+  - Render a smooth 24-bit TrueColor perimeter gradient from Siri cyan and blue through violet, magenta, coral, and amber.
+  - Use a Siri-blue frosted selected-row background with consistent highlight restoration, preventing background-color artifacts inside matched command text.
+
 ## [0.3.14] - 2026-08-22
 
 ### New Features & Enhancements
@@ -16,7 +24,7 @@ All notable changes to HintShell will be documented in this file.
   - Case-insensitive substring (`contains`) fallback matching when exact prefix matches are unavailable.
 - **Customizable UI Config (`~/.hintshell/config.toml`)**:
   - Automatically generates `~/.hintshell/config.toml` on `hintshell init` or on first interactive shell launch.
-  - Multi-palette popup border customization (`border_color`: `purple`, `rainbow`/`gemini`, `blue`, `cyan`, `green`, `yellow`, `orange`, `pink`, `magenta`, `minimal`).
+  - Multi-palette popup border customization (`border_color`: `apple`/`siri`/`glow`, `rainbow`/`gemini`, `purple`, `blue`, `cyan`, `green`, `yellow`, `orange`, `pink`, `magenta`, `minimal`).
   - Configurable suggestion count limit (`max_visible`) and inline preview toggle (`ghost_text`).
 
 ## [0.3.13] - 2026-08-21
