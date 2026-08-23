@@ -1,0 +1,33 @@
+# HintShell
+> Personal Command Intelligence Engine & Local Real-time Terminal Autocomplete
+
+HintShell is a lightweight, local command-suggestion engine written in Rust that embeds directly into shells (PowerShell, Bash, Git Bash, Zsh, WSL2). It delivers millisecond-latency command autocomplete, contextual filesystem navigation (`cd`), project stack awareness (`npm`, `pnpm`, `bun`, `cargo`, `docker`), and typo tolerance without transmitting any command history to external servers.
+
+## Core Capabilities
+- **Real-Time Interactive Overlay**: Displays a floating, scrollable suggestion box beneath the terminal prompt on interactive shells.
+- **Smart Directory Navigation (`cd`)**: Dynamically resolves local directories sorted by modification time (`mtime`) with `cd ..` and `cd -` fast shortcuts.
+- **Deep Context Engine**: Detects workspace indicator files (`Cargo.toml`, `package.json`, lockfiles, `docker-compose.yml`, `.git/index`) to suggest context-relevant build, test, dev, and git commands.
+- **Typo Tolerance & Substring Matching**: Tolerates single-character typos (`gti` -> `git`) and provides fallback substring (`contains`) searches.
+- **Client-Daemon Architecture**: High-speed IPC over Local Named Pipes (Windows) / Unix Domain Sockets (macOS/Linux) connecting CLI frontends to a local SQLite database engine.
+- **Customizable UI (`~/.hintshell/config.toml`)**: Customizable border colors (`purple`, `rainbow`/`gemini`, `blue`, `cyan`, `green`, `yellow`, `pink`, `minimal`), result limits, and inline ghost text.
+
+## Quick Reference
+- **GitHub Repository**: https://github.com/philau2512/hintshell
+- **NPM Package**: https://www.npmjs.com/package/hintshell
+- **Documentation & Usage**: See README.md in the repository root.
+
+## Installation & CLI Commands
+- Install: `npm install -g hintshell@latest --foreground-scripts`
+- Setup: `hs init` (or `hs init --git-bash-fast` on Windows VS Code)
+- Start Daemon: `hs start`
+- Stop Daemon: `hs stop`
+- Check Status: `hs status`
+- Query Suggestions: `hintshell suggest "<input>" [--cwd "<path>"]`
+- Update: `hs update`
+- Uninstall: `hs uninstall`
+
+## Tech Stack
+- **Language**: Rust (Edition 2021)
+- **Database**: Embedded SQLite with WAL mode (`rusqlite`)
+- **Matching Engine**: Skim-based fuzzy matcher + Levenshtein distance
+- **IPC Protocol**: JSON over Named Pipes / UDS
