@@ -818,7 +818,7 @@ struct SuggestionResult {
 fn query_request(input: String, cwd: Option<String>, shell: &str) -> HintShellRequest {
     HintShellRequest::Suggest {
         input,
-        limit: 12,
+        limit: 30,
         cwd,
         shell: Some(shell.to_string()),
     }
@@ -845,7 +845,7 @@ fn start_query_worker(
 
             let cwd = cwd.lock().ok().and_then(|current| current.clone());
             let request = query_request(buffer.clone(), cwd, shell);
-            let suggestions = runtime
+            let raw_suggestions = runtime
                 .block_on(async {
                     tokio::time::timeout(QUERY_TIMEOUT, crate::send_request(&request))
                         .await
@@ -853,15 +853,25 @@ fn start_query_worker(
                         .and_then(Result::ok)
                         .and_then(|response| response.suggestions)
                         .unwrap_or_default()
-                })
-                .into_iter()
-                .filter(|suggestion| {
-                    suggestion
-                        .command
-                        .to_ascii_lowercase()
-                        .starts_with(&buffer.to_ascii_lowercase())
-                })
+                });
+
+            let buffer_lower = buffer.to_ascii_lowercase();
+            // 1. First priority: commands starting with the typed input (prefix match)
+            let prefix_matches: Vec<SuggestionItem> = raw_suggestions
+                .iter()
+                .filter(|s| s.command.to_ascii_lowercase().starts_with(&buffer_lower))
+                .cloned()
                 .collect();
+
+            let suggestions = if !prefix_matches.is_empty() {
+                prefix_matches
+            } else {
+                // 2. Fallback: if no command starts with input, match commands containing input (substring / contains)
+                raw_suggestions
+                    .into_iter()
+                    .filter(|s| s.command.to_ascii_lowercase().contains(&buffer_lower))
+                    .collect()
+            };
 
             let _ = sender.send(SuggestionResult {
                 generation,
@@ -1061,10 +1071,14 @@ fn tab_action(buffer: &str, suggestion: Option<&SuggestionItem>) -> TabAction {
     match suggestion {
         Some(suggestion)
             if is_suggestable(buffer)
-                && suggestion
+                && (suggestion
                     .command
                     .to_ascii_lowercase()
-                    .starts_with(&buffer.to_ascii_lowercase()) =>
+                    .starts_with(&buffer.to_ascii_lowercase())
+                    || suggestion
+                        .command
+                        .to_ascii_lowercase()
+                        .contains(&buffer.to_ascii_lowercase())) =>
         {
             TabAction::AcceptHintShell
         }

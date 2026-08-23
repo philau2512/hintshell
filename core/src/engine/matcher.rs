@@ -212,7 +212,7 @@ impl SuggestionEngine {
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        let all_tiers = vec![recent, defaults, popular, others];
+        let all_tiers = vec![recent, popular, others, defaults];
         for tier in all_tiers {
             for s in tier {
                 if !seen.contains(&s.command) {
@@ -324,15 +324,19 @@ fn merge_suggestions(
 }
 
 fn match_tier(suggestion: &Suggestion, input: &str) -> u8 {
-    if suggestion.command.starts_with(input) {
+    let cmd_lower = suggestion.command.to_ascii_lowercase();
+    let input_lower = input.to_ascii_lowercase();
+    if cmd_lower.starts_with(&input_lower) {
         0
     } else if matches!(
         suggestion.source.as_str(),
         "path" | "git" | "npm" | "docker" | "ssh" | "zoxide"
     ) {
         1
-    } else {
+    } else if cmd_lower.contains(&input_lower) {
         2
+    } else {
+        3
     }
 }
 
