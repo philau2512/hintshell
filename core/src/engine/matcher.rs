@@ -567,6 +567,8 @@ mod tests {
             .any(|candidate| candidate.command == "cd cli/"));
 
         let suggestions = engine.suggest_with_context("cd ", 5, temp.path().to_str(), Some("bash"));
+        // Đảm bảo 1 lệnh lịch sử gần nhất có điểm cao nhất đứng đầu, và các thư mục path nằm ngay bên dưới
+        assert_eq!(suggestions[0].command, "cd historical-9");
         assert!(
             suggestions
                 .iter()

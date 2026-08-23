@@ -2,6 +2,23 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.14] - 2026-08-22
+
+### New Features & Enhancements
+- **Smart Directory Navigation (`cd`)**:
+  - Contextual `cd` directory completion: automatically lists child directories in the current working directory (`cwd`), sorted by most recent modification time (`mtime`).
+  - Out-of-the-box shortcut suggestions for `cd ..` (parent directory) and `cd -` (previous directory).
+  - Balanced hierarchy ranking: The highest-scoring historical/frequent command retains the **#1 Top Slot**, with real-world directory candidates immediately following beneath.
+- **Deep Context Engine**:
+  - Automatically identifies project stack markers (`pnpm-lock.yaml`, `bun.lockb`, `yarn.lock`, `Cargo.toml`, `docker-compose.yml`, `.git/index`) to recommend contextual dev, build, test, and git workflows.
+- **Typo Tolerance & Fuzzy Substring Matching**:
+  - Tolerates single-character command typos (Levenshtein distance $\le 1$ for common slips like `gti`, `dcoker`...).
+  - Case-insensitive substring (`contains`) fallback matching when exact prefix matches are unavailable.
+- **Customizable UI Config (`~/.hintshell/config.toml`)**:
+  - Automatically generates `~/.hintshell/config.toml` on `hintshell init` or on first interactive shell launch.
+  - Multi-palette popup border customization (`border_color`: `purple`, `rainbow`/`gemini`, `blue`, `cyan`, `green`, `yellow`, `orange`, `pink`, `magenta`, `minimal`).
+  - Configurable suggestion count limit (`max_visible`) and inline preview toggle (`ghost_text`).
+
 ## [0.3.13] - 2026-08-21
 
 ### Bug Fixes

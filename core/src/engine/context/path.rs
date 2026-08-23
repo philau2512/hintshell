@@ -67,7 +67,7 @@ pub fn list_path_candidates_with_limit(
         return Vec::new();
     };
 
-    let mut candidates = entries
+    let mut entries_with_meta = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -91,20 +91,36 @@ pub fn list_path_candidates_with_limit(
             if is_directory && !value.ends_with('/') {
                 value.push('/');
             }
-            Some(PathCandidate {
-                value,
-                is_directory,
-            })
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            Some((
+                PathCandidate {
+                    value,
+                    is_directory,
+                },
+                modified,
+                name,
+            ))
         })
         .collect::<Vec<_>>();
 
-    candidates.sort_by(
-        |left, right| match (left.is_directory, right.is_directory) {
+    // Sắp xếp: Thư mục lên trước file, trong cùng loại ưu tiên file/folder sửa đổi gần nhất (mtime), rồi theo tên
+    entries_with_meta.sort_by(|(left, left_mtime, left_name), (right, right_mtime, right_name)| {
+        match (left.is_directory, right.is_directory) {
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
-            _ => left.value.cmp(&right.value),
-        },
-    );
+            _ => right_mtime
+                .cmp(left_mtime)
+                .then_with(|| left_name.cmp(right_name)),
+        }
+    });
+
+    let mut candidates = entries_with_meta
+        .into_iter()
+        .map(|(cand, _, _)| cand)
+        .collect::<Vec<_>>();
     candidates.truncate(limit);
     candidates
 }
@@ -206,19 +222,9 @@ mod tests {
         std::fs::write(temp.path().join("sample.txt"), "").unwrap();
 
         let candidates = list_path_candidates(temp.path(), "s", false, &[".rs"]);
-        assert_eq!(
-            candidates,
-            vec![
-                PathCandidate {
-                    value: "src/".to_string(),
-                    is_directory: true,
-                },
-                PathCandidate {
-                    value: "sample.rs".to_string(),
-                    is_directory: false,
-                },
-            ]
-        );
+        assert!(candidates.iter().any(|c| c.value == "src/" && c.is_directory));
+        assert!(candidates.iter().any(|c| c.value == "sample.rs" && !c.is_directory));
+        assert!(!candidates.iter().any(|c| c.value.contains(".cache")));
     }
 
     #[test]

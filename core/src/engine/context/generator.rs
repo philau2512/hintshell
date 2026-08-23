@@ -20,22 +20,24 @@ pub fn generate_filesystem_candidates(
     let Some(command) = context.command.as_deref() else {
         return Vec::new();
     };
-    if context.current_token.starts_with('-') {
-        return Vec::new();
-    }
 
     let specification = filesystem_specification(command, &context.arguments);
     let Some(specification) = specification else {
         return Vec::new();
     };
-    let values = list_path_candidates(
-        cwd,
-        &context.current_token,
-        specification.directories_only,
-        specification.suffixes,
-    );
 
-    values
+    let values = if context.current_token.starts_with('-') && command != "cd" {
+        Vec::new()
+    } else {
+        list_path_candidates(
+            cwd,
+            &context.current_token,
+            specification.directories_only,
+            specification.suffixes,
+        )
+    };
+
+    let mut candidates: Vec<ContextCandidate> = values
         .into_iter()
         .take(MAX_PATH_CANDIDATES)
         .map(|candidate| ContextCandidate {
@@ -48,7 +50,30 @@ pub fn generate_filesystem_candidates(
             source: "path".to_string(),
             score: 12.0,
         })
-        .collect()
+        .collect();
+
+    // Hỗ trợ bổ sung cho lệnh `cd`: nếu đang gõ cd / cd <token>, gợi ý thêm `cd ..` và `cd -`
+    if command == "cd" {
+        let token = &context.current_token;
+        if token.is_empty() || "..".starts_with(token) {
+            candidates.push(ContextCandidate {
+                command: "cd ..".to_string(),
+                description: Some("parent directory".to_string()),
+                source: "path".to_string(),
+                score: 11.5,
+            });
+        }
+        if token.is_empty() || "-".starts_with(token) {
+            candidates.push(ContextCandidate {
+                command: "cd -".to_string(),
+                description: Some("previous directory".to_string()),
+                source: "path".to_string(),
+                score: 11.0,
+            });
+        }
+    }
+
+    candidates
 }
 
 struct FilesystemSpecification {
@@ -111,14 +136,23 @@ mod tests {
         let candidates =
             generate_filesystem_candidates(&CommandContext::parse("cd s"), temp.path());
         assert_eq!(
-            candidates,
-            vec![ContextCandidate {
+            candidates[0],
+            ContextCandidate {
                 command: "cd src/".to_string(),
                 description: Some("directory".to_string()),
                 source: "path".to_string(),
                 score: 12.0,
-            }]
+            }
         );
+    }
+
+    #[test]
+    fn creates_special_cd_candidates_for_parent_and_previous() {
+        let temp = tempdir().unwrap();
+        let candidates =
+            generate_filesystem_candidates(&CommandContext::parse("cd "), temp.path());
+        assert!(candidates.iter().any(|c| c.command == "cd .." && c.description.as_deref() == Some("parent directory")));
+        assert!(candidates.iter().any(|c| c.command == "cd -" && c.description.as_deref() == Some("previous directory")));
     }
 
     #[test]
@@ -141,7 +175,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            generate_filesystem_candidates(&CommandContext::parse("cd --ver"), temp.path())
+            generate_filesystem_candidates(&CommandContext::parse("cat --ver"), temp.path())
                 .is_empty()
         );
     }

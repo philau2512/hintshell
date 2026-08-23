@@ -364,6 +364,9 @@ async fn main() {
                 }
             }
 
+            // Ensure ~/.hintshell/config.toml is created with default settings
+            crate::config::HintShellConfig::load();
+
             if git_bash_fast {
                 match shell::install_git_bash_fast_rcfile() {
                     Ok(path) => println!("{}", git_bash_fast_vscode_profile(&path)),

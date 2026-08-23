@@ -154,14 +154,31 @@ Open a new terminal after initialization. The wrapper starts the same shell as a
 
 **Tab-to-Suggest** uses `fzf` when available. Type `git ` and press **Tab** to open a ranked command picker; **Enter** fills the command line. If `fzf` is unavailable, HintShell uses the top matching command without emitting an executable-path error.
 
-### Context-aware suggestions
+### Context-aware suggestions & Smart Directory Navigation
 
 Each request includes the current working directory and shell. HintShell merges bounded contextual candidates with local and global history, then ranks the combined list once.
 
-- Paths for supported argument positions, including `cd`, `pushd`, `mkdir`, `rmdir`, `cat`, `rg`, `git add`, and `docker build`.
-- Git branches/remotes, npm-family scripts, Docker entities, SSH hosts, and zoxide directories when the command and local runtime are available.
-- Local-history matches are boosted only for the active directory; prefix quality remains more important than contextual or fuzzy matches.
-- Filesystem scans, workspace detection, and external commands are bounded, cached where appropriate, and fail closed. Context candidates never write themselves to command history.
+- **Smart `cd` Suggestions**: Typing `cd ` automatically lists directories in your current folder sorted by recent modification time (`mtime`), while keeping your #1 most frequent/recent command on top. Shortcut completions like `cd ..` and `cd -` are included out of the box.
+- **Deep Tech Stack Detection**: Automatically senses workspace marker files (`pnpm-lock.yaml`, `bun.lockb`, `yarn.lock`, `Cargo.toml`, `docker-compose.yml`, `.git/index`) to recommend contextual dev, build, test, and git workflow commands.
+- **Typo Tolerance & Substring Matching**: Tolerates single-character command typos (`gti` $\rightarrow$ `git`, `dcoker` $\rightarrow$ `docker`) with automatic substring (`contains`) fallback matching.
+- **Paths & Tool Arguments**: Paths for supported argument positions, including `cd`, `pushd`, `mkdir`, `rmdir`, `cat`, `rg`, `git add`, and `docker build`.
+- **Entity Suggestions**: Git branches/remotes, npm-family scripts, Docker entities, SSH hosts, and zoxide directories when the command and local runtime are available.
+- **Privacy & Performance**: Filesystem scans, workspace detection, and external commands are bounded, cached where appropriate, and fail closed. Context candidates never write themselves to command history.
+
+### 🎨 Customization (`~/.hintshell/config.toml`)
+
+HintShell creates a configuration file at `~/.hintshell/config.toml` automatically on initial setup:
+
+```toml
+# Popup border color: "purple" (default), "rainbow" / "gemini", "blue", "cyan", "green", "yellow", "orange", "pink", "magenta", "minimal"
+border_color = "purple"
+
+# Maximum number of suggestions shown in popup overlay (default: 6)
+max_visible = 6
+
+# Enable inline ghost text completion preview (default: true)
+ghost_text = true
+```
 
 ### PowerShell (Windows/Unix)
 **Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type.
