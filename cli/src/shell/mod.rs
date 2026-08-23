@@ -119,6 +119,7 @@ _hintshell_git_branch() {{
     fi
   fi
 }}
+alias cls='clear'
 PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[36m\]`_hintshell_git_branch`\[\e[0m\]\n$ '
 export PATH="{bin_dir}:$PATH"
 if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
@@ -889,6 +890,7 @@ mod tests {
         let content = git_bash_fast_rcfile_content(&rcfile);
 
         assert!(content.contains("_hintshell_git_branch"));
+        assert!(content.contains("alias cls='clear'"));
         assert!(content.contains("source '"));
         assert!(content.contains("_hintshell_live_record"));
         assert!(content.contains(") > /dev/null 2>&1 & disown"));
