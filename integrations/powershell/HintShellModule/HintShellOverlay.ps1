@@ -392,6 +392,15 @@ function script:Draw-HSOverlay {
     $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;243m$hintText$e[0m")
     $lines++
 
+    # If previous overlay had more lines than current, clear trailing lines atomically
+    $oldLines = $script:HS.OverlayLines
+    if ($oldLines -gt $lines -and $oldLines -ne -1) {
+        $toClearExtra = [Math]::Min($oldLines - $lines, [Math]::Max(0, $maxDown - $lines))
+        for ($k = 0; $k -lt $toClearExtra; $k++) {
+            $null = $buf.Append("$e[1B$e[1G$e[2K")
+        }
+    }
+
     [Console]::Write($buf.ToString())
 
     # Restore cursor to EXACT saved position

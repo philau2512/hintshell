@@ -2,6 +2,16 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.3.16] - 2026-08-25
+
+### Improvements & Bug Fixes
+- **Zero-Flicker Live UI Overlay**:
+  - Eliminate visual flickering during rapid typing by replacing proactive screen clearing with atomic in-place frame overwriting.
+  - Retain existing overlay frame smoothly until new suggestion results arrive, eliminating blank gap frames.
+  - Automatically prune trailing lines when transitioning between different suggestion list heights in a single stdout write.
+  - Fix prompt overlay clearing when deleting the input buffer to empty via Backspace / Delete, ensuring immediate re-triggering upon typing new characters.
+  - Synchronize atomic overwrite mechanics across both Rust Live PTY and PowerShell PSReadLine overlay modules.
+
 ## [0.3.15] - 2026-08-22
 
 ### New Features

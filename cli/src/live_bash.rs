@@ -245,9 +245,10 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
 
     while running {
         while let Ok(shell_event) = shell_events_rx.try_recv() {
-            clear_overlay(&mut state, &output)?;
             match shell_event {
                 ShellEvent::Output(bytes) => {
+                    // When shell outputs text during interactive typing, do not clear
+                    // overlay proactively if tracking is valid; just forward terminal bytes.
                     write_terminal(&output, &bytes)?;
                 }
                 ShellEvent::StartupPhase(phase) => {
@@ -258,16 +259,19 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                         trace_startup(started, "received first prompt marker");
                         saw_first_prompt = true;
                     }
+                    clear_overlay(&mut state, &output)?;
                     state.tracking_valid = true;
                     state.buffer.clear();
                     state.clear();
                 }
-                ShellEvent::Closed => running = false,
+                ShellEvent::Closed => {
+                    clear_overlay(&mut state, &output)?;
+                    running = false;
+                }
             }
         }
         while let Ok(result) = result_rx.try_recv() {
             if result.generation == state.generation && result.buffer == state.buffer {
-                clear_overlay(&mut state, &output)?;
                 state.suggestions = result.suggestions;
                 state.selected = 0;
                 render_overlay(&mut state, &output)?;
@@ -401,7 +405,6 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
         if input_mode == UnixInputMode::PromptOverlay {
             while let Ok(result) = result_rx.try_recv() {
                 if result.generation == state.generation && result.buffer == state.buffer {
-                    clear_overlay(&mut state, &output)?;
                     state.suggestions = result.suggestions;
                     state.selected = 0;
                     render_overlay(&mut state, &output)?;
@@ -927,12 +930,10 @@ fn handle_key(
             }
         },
         KeyCode::Up if !state.suggestions.is_empty() => {
-            clear_overlay(state, output)?;
             state.selected = state.selected.saturating_sub(1);
             render_overlay(state, output)?;
         }
         KeyCode::Down if !state.suggestions.is_empty() => {
-            clear_overlay(state, output)?;
             state.selected = (state.selected + 1).min(state.suggestions.len() - 1);
             render_overlay(state, output)?;
         }
@@ -944,13 +945,18 @@ fn handle_key(
         }
         KeyCode::Esc => forward_and_invalidate(state, writer, output, b"\x1b")?,
         KeyCode::Backspace => {
-            clear_overlay(state, output)?;
             if !state.tracking_valid {
                 forward_and_invalidate(state, writer, output, b"\x7f")?;
             } else {
                 state.buffer.pop();
                 write_to_shell(writer, b"\x7f")?;
-                request_suggestions(state, query_tx);
+                if state.buffer.is_empty() {
+                    clear_overlay(state, output)?;
+                    state.clear();
+                    state.generation = state.generation.wrapping_add(1);
+                } else {
+                    request_suggestions(state, query_tx, output);
+                }
             }
         }
         KeyCode::Enter => {
@@ -962,12 +968,11 @@ fn handle_key(
             state.generation = state.generation.wrapping_add(1);
         }
         KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            clear_overlay(state, output)?;
             if state.tracking_valid {
                 state.buffer.push(character);
             }
             write_to_shell(writer, character.to_string().as_bytes())?;
-            request_suggestions(state, query_tx);
+            request_suggestions(state, query_tx, output);
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             clear_overlay(state, output)?;
@@ -1028,7 +1033,7 @@ fn handle_key(
                     if !next_chunk.is_empty() {
                         write_to_shell(writer, next_chunk.as_bytes())?;
                         state.buffer.push_str(&next_chunk);
-                        request_suggestions(state, query_tx);
+                        request_suggestions(state, query_tx, output);
                         return Ok(());
                     }
                 }
@@ -1039,7 +1044,18 @@ fn handle_key(
         KeyCode::Right => forward_and_invalidate(state, writer, output, b"\x1b[C")?,
         KeyCode::Home => forward_and_invalidate(state, writer, output, b"\x01")?,
         KeyCode::End => forward_and_invalidate(state, writer, output, b"\x05")?,
-        KeyCode::Delete => forward_and_invalidate(state, writer, output, b"\x1b[3~")?,
+        KeyCode::Delete => {
+            if !state.tracking_valid {
+                forward_and_invalidate(state, writer, output, b"\x1b[3~")?;
+            } else {
+                write_to_shell(writer, b"\x1b[3~")?;
+                // Delete invalidates simple tail buffer, clear overlay cleanly
+                clear_overlay(state, output)?;
+                state.clear();
+                state.tracking_valid = false;
+                state.generation = state.generation.wrapping_add(1);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -1098,10 +1114,13 @@ fn write_to_shell(writer: &Arc<Mutex<Box<dyn Write + Send>>>, bytes: &[u8]) -> R
         .map_err(|error| format!("cannot write to Git Bash: {error}"))
 }
 
-fn request_suggestions(state: &mut OverlayState, sender: &mpsc::Sender<(u64, String)>) {
+fn request_suggestions(state: &mut OverlayState, sender: &mpsc::Sender<(u64, String)>, output: &Arc<Mutex<io::Stdout>>) {
     state.generation = state.generation.wrapping_add(1);
     state.clear();
     if !state.tracking_valid || !is_suggestable(&state.buffer) {
+        if state.rendered_lines > 0 {
+            let _ = clear_overlay(state, output);
+        }
         return;
     }
     let _ = sender.send((state.generation, state.buffer.clone()));
@@ -1173,6 +1192,9 @@ fn clear_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> R
 
 fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> Result<(), String> {
     if state.suggestions.is_empty() {
+        if state.rendered_lines > 0 {
+            clear_overlay(state, output)?;
+        }
         return Ok(());
     }
 
@@ -1189,8 +1211,12 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let (cur_col, cur_row) = position().unwrap_or((0, 0));
     let shown = visible_suggestion_rows(cur_row, terminal_height, total, config.max_visible);
     if shown == 0 {
+        if state.rendered_lines > 0 {
+            clear_overlay(state, output)?;
+        }
         return Ok(());
     }
+    let old_rendered_lines = state.rendered_lines;
     let rendered_lines = shown + 3;
     let selected = state.selected.min(total.saturating_sub(1));
     let viewport_start = viewport_start(selected, total, shown);
@@ -1342,6 +1368,13 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
             "\x1b[1B\r\x1b[2K{border_color_ansi}╰{}╯\x1b[0m",
             "─".repeat(inner_width)
         ));
+    }
+
+    // If the previous overlay had more lines than the new one, clear the trailing lines
+    if old_rendered_lines > rendered_lines {
+        for _ in rendered_lines..old_rendered_lines {
+            frame.push_str("\x1b[1B\r\x1b[2K");
+        }
     }
 
     let mut stdout = output

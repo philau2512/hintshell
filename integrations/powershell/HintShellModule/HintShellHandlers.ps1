@@ -61,8 +61,8 @@ function global:Get-HSCharHandler {
             if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
             return
         }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
         if ([Console]::KeyAvailable) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
             [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
             $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
             return
@@ -81,7 +81,12 @@ function global:Get-HSSpaceHandler {
             if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
             return
         }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+        if ([Console]::KeyAvailable) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
+            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+            return
+        }
         [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
         if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
         Invoke-HSAutoSuggest
@@ -96,7 +101,12 @@ function global:Get-HSBackspaceHandler {
             if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
             return
         }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+        if ([Console]::KeyAvailable) {
+            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
+            [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
+            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
+            return
+        }
         [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
         if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
         Invoke-HSAutoSuggest
