@@ -98,6 +98,11 @@ enum UnixInputMode {
 struct OverlayState {
     buffer: String,
     tracking_valid: bool,
+    /// Whether the readline cursor sits at the end of the line. History recall leaves it there,
+    /// cursor keys do not, and that distinction is what makes Ctrl+U recoverable: discarding
+    /// backwards from the end empties the line, while discarding mid-line leaves a tail the
+    /// wrapper has no copy of.
+    cursor_at_end: bool,
     /// Esc hides the panel for the rest of this input line; typing must not bring it back.
     dismissed: bool,
     /// Display columns of dim ghost text drawn after the cursor (narrow/short terminals).
@@ -113,6 +118,7 @@ impl OverlayState {
         Self {
             buffer: String::new(),
             tracking_valid: true,
+            cursor_at_end: true,
             dismissed: false,
             ghost_cols: 0,
             generation: 0,
@@ -272,16 +278,21 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                     }
                     clear_overlay(&mut state, &output)?;
                     state.tracking_valid = true;
+                    state.cursor_at_end = true;
                     state.dismissed = false;
                     state.buffer.clear();
                     state.clear();
+                    trace_state("event PromptReady", &state);
                 }
                 ShellEvent::Continuation => {
                     clear_overlay(&mut state, &output)?;
                     state.buffer.clear();
                     state.clear();
                     state.tracking_valid = false;
+                    // A fresh continuation line is empty with the cursor at its end.
+                    state.cursor_at_end = true;
                     state.generation = state.generation.wrapping_add(1);
+                    trace_state("event Continuation", &state);
                 }
                 ShellEvent::Closed => {
                     clear_overlay(&mut state, &output)?;
@@ -420,6 +431,7 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                     state.clear();
                     state.buffer.clear();
                     state.tracking_valid = true;
+                    state.cursor_at_end = true;
                     state.dismissed = false;
                     state.generation = state.generation.wrapping_add(1);
                 }
@@ -428,6 +440,7 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                     state.buffer.clear();
                     state.clear();
                     state.tracking_valid = false;
+                    state.cursor_at_end = true;
                     state.generation = state.generation.wrapping_add(1);
                 }
                 ShellEvent::Closed => running = false,
@@ -994,6 +1007,9 @@ fn handle_paste(
     clear_overlay(state, output)?;
     state.clear();
     state.tracking_valid = false;
+    // Bracketed paste leaves the cursor after the block it inserted, so a discard from there
+    // empties the line and the overlay can come back without waiting for the next prompt.
+    state.cursor_at_end = true;
     state.generation = state.generation.wrapping_add(1);
     write_to_shell(writer, text.as_bytes())
 }
@@ -1005,6 +1021,7 @@ fn handle_key(
     output: &Arc<Mutex<io::Stdout>>,
     query_tx: &mpsc::Sender<(u64, String)>,
 ) -> Result<(), String> {
+    trace_state(&format!("key {:?} {:?}", key.code, key.modifiers), state);
     match key.code {
         KeyCode::Tab => match tab_action(&state.buffer, state.current()) {
             TabAction::AcceptHintShell if state.tracking_valid => {
@@ -1034,10 +1051,12 @@ fn handle_key(
         },
         // Alt+Up/Down: Bash history, keeping Up/Down free for the panel.
         KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-            forward_and_invalidate(state, writer, output, b"\x10")?
+            forward_and_invalidate(state, writer, output, b"\x10")?;
+            state.cursor_at_end = true;
         }
         KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-            forward_and_invalidate(state, writer, output, b"\x0e")?
+            forward_and_invalidate(state, writer, output, b"\x0e")?;
+            state.cursor_at_end = true;
         }
         KeyCode::Up if !state.suggestions.is_empty() => {
             state.selected = state.selected.saturating_sub(1);
@@ -1047,8 +1066,15 @@ fn handle_key(
             state.selected = (state.selected + 1).min(state.suggestions.len() - 1);
             render_overlay(state, output)?;
         }
-        KeyCode::Up => forward_and_invalidate(state, writer, output, b"\x1b[A")?,
-        KeyCode::Down => forward_and_invalidate(state, writer, output, b"\x1b[B")?,
+        KeyCode::Up => {
+            forward_and_invalidate(state, writer, output, b"\x1b[A")?;
+            // Recalled history arrives complete with the cursor after its last character.
+            state.cursor_at_end = true;
+        }
+        KeyCode::Down => {
+            forward_and_invalidate(state, writer, output, b"\x1b[B")?;
+            state.cursor_at_end = true;
+        }
         KeyCode::Esc if !state.suggestions.is_empty() => {
             clear_overlay(state, output)?;
             state.clear();
@@ -1076,6 +1102,7 @@ fn handle_key(
             clear_overlay(state, output)?;
             state.clear();
             state.tracking_valid = true;
+            state.cursor_at_end = true;
             state.dismissed = false;
             write_to_shell(writer, b"\r")?;
             state.buffer.clear();
@@ -1102,6 +1129,14 @@ fn handle_key(
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             clear_overlay(state, output)?;
             state.buffer.clear();
+            // Discarding backwards from the end of the line empties it, so the wrapper knows
+            // the line exactly again and the overlay can resume on the next keystroke. With
+            // the cursor somewhere inside an unknown line, a tail would survive and the
+            // shadow stays untrusted rather than claiming a line it never saw.
+            if state.cursor_at_end {
+                state.tracking_valid = true;
+            }
+            state.cursor_at_end = true;
             state.generation = state.generation.wrapping_add(1);
             write_to_shell(writer, b"\x15")?;
         }
@@ -1117,7 +1152,11 @@ fn handle_key(
         // all change the line, so the shadowed buffer is dropped.
         KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let Some(sequence) = control_sequence(&key) {
+                let history_recall = matches!(key.code, KeyCode::Char('p' | 'n'));
                 forward_and_invalidate(state, writer, output, &sequence)?;
+                if history_recall {
+                    state.cursor_at_end = true;
+                }
             }
         }
         // Meta bindings (Alt+F, Alt+B, Alt+D …) are ESC-prefixed sequences; sending the
@@ -1195,6 +1234,7 @@ fn handle_key(
                 clear_overlay(state, output)?;
                 state.clear();
                 state.tracking_valid = false;
+                state.cursor_at_end = false;
                 state.generation = state.generation.wrapping_add(1);
             }
         }
@@ -1219,6 +1259,9 @@ fn forward_and_invalidate(
     clear_overlay(state, output)?;
     state.clear();
     state.tracking_valid = false;
+    // Conservative: unless the caller knows the key left the cursor after the line, the
+    // position is unknown and Ctrl+U must not claim the line became empty.
+    state.cursor_at_end = false;
     state.generation = state.generation.wrapping_add(1);
     write_to_shell(writer, bytes)
 }
@@ -1267,12 +1310,37 @@ fn request_suggestions(state: &mut OverlayState, sender: &mpsc::Sender<(u64, Str
     state.generation = state.generation.wrapping_add(1);
     state.clear();
     if !should_query(state) {
+        trace_state("skip", state);
         if state.rendered_lines > 0 || state.ghost_cols > 0 {
             let _ = clear_overlay(state, output);
         }
         return;
     }
+    trace_state("query", state);
     let _ = sender.send((state.generation, state.buffer.clone()));
+}
+
+/// `HINTSHELL_TRACE_KEYS=1` appends one line per keystroke, per query decision and per shell
+/// event to ~/.hintshell/keys-trace.log. The overlay only exists on screen: without this, the
+/// state machine behind a missing panel cannot be inspected from a test, and a user has no way
+/// to report what the wrapper believed at the moment it stopped suggesting.
+fn trace_state(action: &str, state: &OverlayState) {
+    if env::var_os("HINTSHELL_TRACE_KEYS").is_none() {
+        return;
+    }
+    let line = format!(
+        "{action} tracked={} dismissed={} buf={:?} rows={} rendered={} gen={}\n",
+        state.tracking_valid,
+        state.dismissed,
+        state.buffer,
+        state.suggestions.len(),
+        state.rendered_lines,
+        state.generation
+    );
+    let path = crate::shell::hintshell_home().join("keys-trace.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
 }
 
 /// Whether the current line state is worth querying at all: after Esc the panel must stay
@@ -2610,6 +2678,183 @@ mod tests {
         );
         assert!(matches!(receiver.recv(), Ok(ShellEvent::PromptReady)));
         assert!(matches!(receiver.recv(), Ok(ShellEvent::Continuation)));
+    }
+
+    /// A byte sink standing in for the ConPTY child input, so key handling can be tested
+    /// without a terminal.
+    #[derive(Clone)]
+    struct ShellSink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for ShellSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct KeyHarness {
+        state: OverlayState,
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        output: Arc<Mutex<io::Stdout>>,
+        queries: mpsc::Sender<(u64, String)>,
+        answers: mpsc::Receiver<(u64, String)>,
+        sent: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl KeyHarness {
+        fn new() -> Self {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+                Arc::new(Mutex::new(Box::new(ShellSink(Arc::clone(&sent)))));
+            let (queries, answers) = mpsc::channel();
+            Self {
+                state: OverlayState::new(),
+                writer,
+                output: Arc::new(Mutex::new(io::stdout())),
+                queries,
+                answers,
+                sent,
+            }
+        }
+
+        fn send(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+            let key = KeyEvent::new(code, modifiers);
+            handle_key(
+                key,
+                &mut self.state,
+                &self.writer,
+                &self.output,
+                &self.queries,
+            )
+            .expect("key handling failed");
+        }
+
+        fn type_text(&mut self, text: &str) {
+            for character in text.chars() {
+                self.send(KeyCode::Char(character), KeyModifiers::NONE);
+            }
+        }
+
+        fn ctrl(&mut self, character: char) {
+            self.send(KeyCode::Char(character), KeyModifiers::CONTROL);
+        }
+
+        fn last_query(&mut self) -> Option<String> {
+            let mut latest = None;
+            while let Ok((_, buffer)) = self.answers.try_recv() {
+                latest = Some(buffer);
+            }
+            latest
+        }
+
+        fn forwarded(&self) -> Vec<u8> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_line_and_the_next_keystroke_asks_again() {
+        let mut harness = KeyHarness::new();
+        harness.type_text("git status");
+        harness.ctrl('u');
+
+        assert_eq!(harness.state.buffer, "", "Ctrl+U left the shadowed line populated");
+        assert!(
+            harness.forwarded().ends_with(b"\x15"),
+            "Ctrl+U was not forwarded to bash: {:?}",
+            harness.forwarded()
+        );
+        assert!(harness.state.tracking_valid, "Ctrl+U discarded the line model");
+
+        harness.type_text("ls");
+        assert_eq!(
+            harness.last_query().as_deref(),
+            Some("ls"),
+            "typing after Ctrl+U stopped querying the engine"
+        );
+    }
+
+    #[test]
+    fn history_recall_then_ctrl_u_brings_the_overlay_back() {
+        // Up/Down recall replaces the whole line, which the wrapper cannot model, so the
+        // shadow is dropped. Readline leaves the cursor after the recalled text, therefore a
+        // Ctrl+U from there empties the line and the next keystroke is trustworthy again.
+        let mut harness = KeyHarness::new();
+        harness.type_text("git status");
+        harness.send(KeyCode::Up, KeyModifiers::NONE);
+        assert!(!harness.state.tracking_valid, "history recall kept a stale model");
+        harness.ctrl('u');
+        assert!(
+            harness.state.tracking_valid,
+            "Ctrl+U from the end of a recalled line did not restore the model"
+        );
+        harness.type_text("ls");
+        assert_eq!(
+            harness.last_query().as_deref(),
+            Some("ls"),
+            "the overlay stayed dead after Ctrl+U following history recall"
+        );
+    }
+
+    #[test]
+    fn mid_line_cursor_move_then_ctrl_u_stays_conservative() {
+        // After moving the cursor inside a line the wrapper cannot model, Ctrl+U leaves a tail
+        // it has no copy of. Claiming an empty line here would make an accept insert text into
+        // the wrong place, so the shadow deliberately stays untrusted until the next prompt.
+        let mut harness = KeyHarness::new();
+        harness.type_text("git status");
+        harness.send(KeyCode::Left, KeyModifiers::NONE);
+        harness.ctrl('u');
+        assert!(!harness.state.tracking_valid, "Ctrl+U claimed a line it never saw");
+        harness.last_query(); // drain the queries the trusted typing already made
+        harness.type_text("ls");
+        assert_eq!(
+            harness.last_query(),
+            None,
+            "the wrapper queried with a buffer it does not trust"
+        );
+    }
+
+    #[test]
+    fn ctrl_u_after_accepting_a_suggestion_with_tab_asks_again() {
+        // The reported flow: type a prefix, select a row, press Tab to accept it, then press
+        // Ctrl+U to throw the line away and start typing again.
+        let mut harness = KeyHarness::new();
+        harness.type_text("git st");
+        harness.state.suggestions = vec![suggestion("git status")];
+        harness.send(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            harness.state.buffer, "git status",
+            "Tab did not accept the selected row"
+        );
+
+        harness.ctrl('u');
+        assert_eq!(harness.state.buffer, "");
+        harness.type_text("git ");
+        assert_eq!(
+            harness.last_query().as_deref(),
+            Some("git "),
+            "typing after Ctrl+U stopped querying after a Tab accept"
+        );
+    }
+
+    #[test]
+    fn ctrl_u_after_bash_tab_completion_asks_again() {
+        // Tab can also be handed to Bash for its own completion, which rewrites the line with
+        // text the wrapper never saw. Ctrl+U then has to make the line usable again.
+        let mut harness = KeyHarness::new();
+        harness.type_text("git sta");
+        harness.send(KeyCode::Tab, KeyModifiers::NONE);
+        harness.ctrl('u');
+        harness.type_text("ls");
+        assert_eq!(
+            harness.last_query().as_deref(),
+            Some("ls"),
+            "typing after Ctrl+U stopped querying after Bash completion"
+        );
     }
 
     #[test]
