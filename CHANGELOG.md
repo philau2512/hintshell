@@ -2,6 +2,39 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.4.0] - 2026-11-24
+
+### New Features
+- **Advisory overlay keys (live Bash/Zsh overlay)**:
+  - `Tab` or `→` accepts the highlighted command, `Alt+→` accepts only the next word, `Esc` hides the panel for the rest of the line and `Ctrl+Space` brings it back without typing.
+  - Readline chords the overlay does not consume now reach the shell instead of vanishing: `Ctrl+R`, `Ctrl+D`, `Ctrl+L`, `Ctrl+W`, `Ctrl+A`/`Ctrl+E`, `Ctrl+`arrows, `PageUp`/`PageDown`, `Insert` and `F1`–`F12`.
+  - Cursor keys keep their modifiers, so `Ctrl+Left` is still a word motion rather than a plain `←`.
+- **Protocol markers on every shell**: the Bash and Zsh hooks report the working directory, end-of-prompt, continuation and startup phase, so suggestions follow `cd` and stop shadowing a heredoc or an open quote.
+- **Readable suggestion rows**: each row carries a match-tier tag (`≈` typo-tolerant, `~` substring/fuzzy, none for a plain prefix or contextual hit), a source label (`here`, `history`, `most used`, `starter`, `path`, `git`, `docker`…) and a usage count, and risky commands are marked `[!]`. The README gains a "How to read a suggestion row" legend.
+- **Adaptive layout**: the frame never exceeds the terminal width, collapses to a compact list below 64 columns, and falls back to dim ghost text when there is no room to draw a box.
+- **Diagnostics**: `HINTSHELL_TRACE_KEYS=1` appends one line per keystroke to `~/.hintshell/keys-trace.log` (the key, the tracked/dismissed flags, the shadowed buffer, the row count), which makes "it stopped suggesting" reportable from text.
+- **`hs config`** prints the effective configuration and reports each unknown or out-of-range value in `config.toml` exactly once.
+
+### Improvements & Bug Fixes
+- **Marker wire format moved to OSC 5522** *(breaking between hook and wrapper, see Upgrade notes)*: Windows ConPTY re-maps bare `0x1e`/`0x1f` control bytes through the console codepage, so the previous RS/US markers reached the screen as `▲HINTSHELL_CWD:C:\Users\me▼` and made the prompt flicker on Backspace. Escape sequences pass through ConPTY unchanged and a terminal that does not implement OSC 5522 ignores it, so a leaked marker is now invisible instead of garbage. The legacy byte shape and its post-translation glyph shape are still filtered, so an old generated rcfile cannot print marker text.
+- **PowerShell arrow keys restored**: the handlers were built with `.GetNewClosure()`, which clones the defining scope, so `↑`/`↓` moved a throwaway copy of the selection and the panel never changed. They are plain scriptblocks now and derive the direction from the key event PSReadLine passes in.
+- **`Ctrl+U` recovers the overlay**: after history recall or a paste, discarding backwards from the end of the line proves the line is empty, so suggestions resume on the next keystroke instead of waiting for `Enter`.
+- **Ranking honesty**: the client-side prefix/substring filters that hid the engine's typo and fuzzy tiers were removed, and destructive candidates are refused by the silent one-keypress accept path, which now requires an explicit `Tab`.
+- **Risk and tier reach the PowerShell overlay**: the daemon projection dropped both fields, so `[!]` and `≈`/`~` could never appear there; `Test-HSDestructive` falls back to a local high-confidence list when an older daemon sends no risk field.
+- **Starter catalogue**: 29 descriptions rewritten, the duplicate PowerShell copy is byte-identical to the embedded one, and a drift-guard test fails if they diverge again.
+- **Presentation consistency**: fabricated `(0x)` counters removed, footer hints unified across the Rust and PowerShell surfaces, TrueColor gradients quantised to the 256-colour cube when `COLORTERM` is absent, and colour is never the only signal.
+- **Config and init**: warnings no longer print twice per load, and `hs config` stops advertising a component that is not shipped.
+
+### Testing
+- `cli/tests/overlay_keys.rs` drives the real wrapper inside a real ConPTY with real keystrokes and asserts on the bytes that would reach the screen, which is the only layer that can see ConPTY's byte translation.
+- `scripts/test-marker-gate.sh` covers marker authorisation across nested, unwrapped and re-sourced shells; `scripts/test-marker-conpty.sh` proves no marker text survives on a live stream.
+- `scripts/test-overlay-layout.ps1` adds source-contract rules plus a behavioural test that invokes the bound PSReadLine scriptblocks with synthetic key events against shared module state.
+- 61 CLI and 52 core unit tests, 6 ConPTY integration tests.
+
+### Upgrade notes
+- Reopen your Git Bash, WSL and PowerShell windows after upgrading so a new wrapper is paired with a new hook.
+- `~/.hintshell/git-bash-fast.bashrc` is written once by `hs init --git-bash-fast`. The compatibility filter keeps an old copy harmless, but re-running that command restores the continuation marker used to hide the panel inside a heredoc or an open quote.
+
 ## [0.3.16] - 2026-08-25
 
 ### Improvements & Bug Fixes
