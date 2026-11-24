@@ -9,7 +9,9 @@ HintShell is a lightweight, local command-suggestion engine written in Rust that
 - **Deep Context Engine**: Detects workspace indicator files (`Cargo.toml`, `package.json`, lockfiles, `docker-compose.yml`, `.git/index`) to suggest context-relevant build, test, dev, and git commands.
 - **Typo Tolerance & Substring Matching**: Tolerates single-character typos (`gti` -> `git`) and provides fallback substring (`contains`) searches.
 - **Client-Daemon Architecture**: High-speed IPC over Local Named Pipes (Windows) / Unix Domain Sockets (macOS/Linux) connecting CLI frontends to a local SQLite database engine.
-- **Customizable UI (`~/.hintshell/config.toml`)**: Customizable border colors (`purple`, `rainbow`/`gemini`, `blue`, `cyan`, `green`, `yellow`, `pink`, `minimal`), result limits, and inline ghost text.
+- **Customizable UI (`~/.hintshell/config.toml`)**: One file styles every surface (live Bash/Zsh overlay and the PowerShell module): border color (`purple` default, `blue`, `cyan`, `green`, `yellow`/`gold`, `orange`, `pink`/`rose`, `magenta`, `red`, `minimal`/`gray`, gradient presets `apple`/`siri`/`glow`/`neon` and `rainbow`/`gemini`/`gradient`/`aurora`), `max_visible` (clamped 3-10) and `ghost_text`. `hs config` prints the effective values and any setting being ignored.
+- **Suggestion Transparency**: Each row shows where it came from (`here`, `history`, `most used`, `starter`, `path`, `scripts`, `git`, `docker`, `ssh hosts`, `folders`, `cargo`), how it matched (no tag = prefix, `~` = substring/fuzzy, `≈` = typo) and a real usage count. Destructive commands are marked `!` / `[!] risky` and are never accepted by an arrow key.
+- **Keys**: Tab accepts a suggestion, Right accepts the inline hint, Alt+Right accepts one word, Up/Down navigate, Alt+Up/Down use shell history, Esc hides the panel for the line, Ctrl+Space brings it back. Every other shell chord and key is passed through untouched.
 
 ## Quick Reference
 - **GitHub Repository**: https://github.com/philau2512/hintshell
@@ -22,6 +24,7 @@ HintShell is a lightweight, local command-suggestion engine written in Rust that
 - Start Daemon: `hs start`
 - Stop Daemon: `hs stop`
 - Check Status: `hs status`
+- Show Effective UI Config: `hs config`
 - Query Suggestions: `hintshell suggest "<input>" [--cwd "<path>"]`
 - Update: `hs update`
 - Uninstall: `hs uninstall`

@@ -2,12 +2,15 @@
 # Viewport + compact mode for narrow terminals.
 # Uses $e[1B for drawing + SetCursorPosition for restore (always exact).
 # Multi-line buffers: suppressed by handlers (Test-HSMultilineBuffer).
+# Presentation follows the same rules as the live Bash overlay: same labels, same tiers,
+# same ~/.hintshell/config.toml, and text colours that survive light terminals.
 
 $script:HS_VIEWPORT_SIZE    = 6
 $script:HS_COMPACT_VIEWPORT = 3
 $script:HS_COMPACT_WIDTH    = 56
 $script:HS_MIN_WIDTH        = 20
 $script:HS_FULL_MAX_WIDTH   = 70
+$script:HS_INFO_WIDTH       = 18
 
 #region State
 $script:HS = @{
@@ -22,6 +25,8 @@ $script:HS = @{
     SavedCursorTop  = 0
     PasteUntil      = [datetime]::MinValue
     ViewportSize    = 6
+    GhostCols       = 0
+    Dismissed       = $false
 }
 
 function script:Reset-HSState {
@@ -34,7 +39,152 @@ function script:Reset-HSState {
     $script:HS.CurrentInput    = ''
     $script:HS.SavedCursorCol  = 0
     $script:HS.SavedCursorTop  = 0
-    $script:HS.ViewportSize    = $script:HS_VIEWPORT_SIZE
+    $script:HS.ViewportSize    = (Get-HSConfig).MaxVisible
+    $script:HS.GhostCols       = 0
+}
+#endregion
+
+#region Configuration (~/.hintshell/config.toml, shared with the Rust overlay)
+function script:Get-HSConfigPath {
+    if ($env:HINTSHELL_HOME) { return Join-Path $env:HINTSHELL_HOME 'config.toml' }
+    return Join-Path $env:USERPROFILE '.hintshell\config.toml'
+}
+
+$script:HS_ConfigCache = $null
+
+# Minimal key reader: the same file the Rust side writes, so one edit styles every surface.
+function script:Get-HSConfig {
+    if ($null -ne $script:HS_ConfigCache) { return $script:HS_ConfigCache }
+
+    $config = @{
+        BorderColor = 'purple'
+        MaxVisible  = $script:HS_VIEWPORT_SIZE
+        GhostText   = $true
+    }
+    $path = Get-HSConfigPath
+    if (Test-Path -LiteralPath $path) {
+        try {
+            foreach ($line in (Get-Content -LiteralPath $path -ErrorAction Stop)) {
+                $text = $line.Trim()
+                if ($text -match '^border_color\s*=\s*"([^"]+)"') { $config.BorderColor = $Matches[1].ToLowerInvariant() }
+                elseif ($text -match '^max_visible\s*=\s*(\d+)') { $config.MaxVisible = [int]$Matches[1] }
+                elseif ($text -match '^ghost_text\s*=\s*(true|false)') { $config.GhostText = ($Matches[1] -eq 'true') }
+            }
+        } catch {
+            # Unreadable config must not cost the user their suggestions.
+        }
+    }
+    # Same clamp the Rust overlay applies, so max_visible means the same thing everywhere.
+    $config.MaxVisible = [Math]::Max(3, [Math]::Min(10, $config.MaxVisible))
+    $script:HS_ConfigCache = $config
+    return $config
+}
+
+function script:Reset-HSConfigCache { $script:HS_ConfigCache = $null }
+
+# Mirrors HintShellConfig::border_ansi_code() with 256-colour codes: Conhost does not
+# always understand 24-bit escapes, and a broken frame is worse than a plain one.
+function script:Get-HSAccentCode {
+    param([string]$Name)
+    switch ($Name) {
+        'blue'                                            { '75' }
+        'cyan'                                            { '51' }
+        'green'                                           { '48' }
+        { $_ -in 'yellow', 'gold' }                       { '220' }
+        'orange'                                          { '208' }
+        { $_ -in 'pink', 'rose' }                         { '212' }
+        'magenta'                                         { '201' }
+        { $_ -in 'minimal', 'gray', 'grey' }              { '244' }
+        'red'                                             { '203' }
+        { $_ -in 'apple', 'siri', 'apple-intelligence', 'glow', 'neon' } { '51' }
+        { $_ -in 'rainbow', 'gemini', 'gradient', 'aurora' }             { '141' }
+        default                                           { '141' }
+    }
+}
+
+# User-facing provenance, identical wording to core::engine::matcher::source_label so a
+# user moving between shells sees the same vocabulary instead of internal keys.
+function script:Get-HSSourceLabel {
+    param([string]$Source)
+    switch ($Source) {
+        'history-local'            { 'here' }
+        { $_ -in 'history-global', 'history' } { 'history' }
+        'frequent'                 { 'most used' }
+        'recent'                   { 'recent' }
+        'default'                  { 'starter' }
+        'path'                     { 'path' }
+        'git'                      { 'git' }
+        { $_ -in 'npm', 'pnpm', 'yarn', 'bun' } { 'scripts' }
+        'docker'                   { 'docker' }
+        'ssh'                      { 'ssh hosts' }
+        'zoxide'                   { 'folders' }
+        'cargo'                    { 'cargo' }
+        default                    { 'history' }
+    }
+}
+
+# Match-quality tag, mirroring core::engine::matcher::tier_tag.
+function script:Get-HSTierTag {
+    param($Tier)
+    switch ([int]$Tier) {
+        0 { '' }
+        1 { '' }
+        3 { [string][char]0x2248 }
+        default { '~' }
+    }
+}
+
+function script:Test-HSDestructive {
+    param($Suggestion)
+    $risk = "$($Suggestion.risk)".Trim().ToLowerInvariant()
+    # A daemon that classified the command is always believed, in both directions.
+    if ($risk -eq 'destructive') { return $true }
+    if ($risk -eq 'normal') { return $false }
+
+    # Older daemons send no risk field at all, and a safety warning must not depend on which
+    # build answered the request. This short list covers the commands where an accidental
+    # acceptance is unrecoverable; the daemon's own list stays authoritative when present.
+    $command = "$($Suggestion.command)".ToLowerInvariant()
+    $fallbackPatterns = @(
+        'rm -rf', 'rm -fr', 'rm -r ', 'sudo rm',
+        'git reset --hard', 'git clean -f', 'git checkout --', 'git push --force', 'git push -f',
+        'docker system prune', 'docker rm -f', 'terraform destroy', 'kubectl delete',
+        'dd if=', 'mkfs', 'chmod -R 777', 'kill -9',
+        'remove-item -recurse -force', 'clear-history'
+    )
+    foreach ($pattern in $fallbackPatterns) {
+        if ($command.StartsWith($pattern)) { return $true }
+    }
+    return $false
+}
+
+# One row's explanation column: provenance, how it matched, how often it was used.
+function script:Get-HSItemInfo {
+    param($Suggestion)
+    $parts = @()
+    $parts += Get-HSSourceLabel -Source "$($Suggestion.source)"
+    $tag = Get-HSTierTag -Tier $Suggestion.tier
+    if ($tag) { $parts += $tag }
+    if ([int]$Suggestion.frequency -gt 0) { $parts += ('{0}x' -f [int]$Suggestion.frequency) }
+    $info = $parts -join ' '
+    if (Test-HSDestructive -Suggestion $Suggestion) { $info = "! $info" }
+    return $info
+}
+
+function script:Get-HSFooterText {
+    param($Suggestion)
+    $description = "$($Suggestion.description)"
+    if ([string]::IsNullOrWhiteSpace($description)) {
+        if ([int]$Suggestion.frequency -gt 0) {
+            $description = 'used {0}x . {1}' -f [int]$Suggestion.frequency, (Get-HSSourceLabel -Source "$($Suggestion.source)")
+        } else {
+            $description = 'no description'
+        }
+    }
+    if (Test-HSDestructive -Suggestion $Suggestion) {
+        $description = "[!] risky . $description"
+    }
+    return $description
 }
 #endregion
 
@@ -157,13 +307,20 @@ function script:Get-HSLayoutBudget {
     $winW = Get-HSConsoleInt -Name WindowWidth -Default 80
     if ($winW -lt 1) { $winW = 80 }
 
+    $config = Get-HSConfig
     $W = [Math]::Max($script:HS_MIN_WIDTH, $winW - 2)
+    # A row wider than the window wraps, and a wrapped row is not the row the clear counts.
+    $W = [Math]::Min($W, [Math]::Max(8, $winW - 1))
     $compact = $W -lt $script:HS_COMPACT_WIDTH
     if (-not $compact) {
         $W = [Math]::Min($W, $script:HS_FULL_MAX_WIDTH)
     }
 
-    $vpMax = if ($compact) { $script:HS_COMPACT_VIEWPORT } else { $script:HS_VIEWPORT_SIZE }
+    $vpMax = if ($compact) {
+        [Math]::Min($script:HS_COMPACT_VIEWPORT, $config.MaxVisible)
+    } else {
+        $config.MaxVisible
+    }
     $availableRows = Get-HSAvailableRows -CursorTop $CursorTop
 
     return @{
@@ -171,6 +328,8 @@ function script:Get-HSLayoutBudget {
         Compact       = $compact
         VpMax         = $vpMax
         AvailableRows = $availableRows
+        Accent        = Get-HSAccentCode -Name $config.BorderColor
+        GhostText     = [bool]$config.GhostText
     }
 }
 #endregion
@@ -188,17 +347,34 @@ function script:Get-HSSuggestions {
         $cleanCmd = $s.command.Replace("`r", "").Replace("`n", " ").Replace("`t", " ").Trim()
         if ([string]::IsNullOrWhiteSpace($cleanCmd)) { continue }
         if ($seen.ContainsKey($cleanCmd)) {
-            $seen[$cleanCmd].frequency += [int]$s.frequency
+            $existing = $seen[$cleanCmd]
+            $existing.frequency += [int]$s.frequency
+            # A duplicate of the same command must not lose the warnings either copy had.
+            if ([int]$s.tier -lt [int]$existing.tier) { $existing.tier = [int]$s.tier }
+            if (Test-HSDestructive -Suggestion $s) { $existing.risk = 'destructive' }
         } else {
-            $newObj = [PSCustomObject]@{ command = $cleanCmd; description = $s.description; frequency = [int]$s.frequency; source = $s.source }
+            $newObj = [PSCustomObject]@{
+                command     = $cleanCmd
+                description = $s.description
+                frequency   = [int]$s.frequency
+                source      = "$($s.source)"
+                # tier and risk are the presentation and safety signals. They used to be
+                # dropped here, so the labels and the risky marker could never reach a row.
+                # An older daemon sends neither: [int] gives 0 (no tag) and Test-HSDestructive
+                # falls back to local rules instead of claiming the command is safe.
+                tier        = [int]$s.tier
+                risk        = "$($s.risk)"
+            }
             $processed += $newObj
             $seen[$cleanCmd] = $newObj
         }
     }
 
-    return @($processed |
-        Where-Object { $_.command -like "$Typed*" } |
-        Select-Object -First 30)
+    # The daemon already ranked candidates by match tier (prefix > contextual > substring >
+    # typo > fuzzy). Filtering to a literal prefix here discarded the typo-tolerant and
+    # contextual results the engine advertises, and treated typed text as a wildcard
+    # pattern, so a path containing [ ] * ? made the panel disappear for no visible reason.
+    return @($processed | Select-Object -First 30)
 }
 #endregion
 
@@ -229,11 +405,19 @@ function script:Clear-HSOverlay {
         $e = [char]27
         [Console]::Write("$e[K")
         $script:HS.OverlayLines = 0
+        $script:HS.GhostCols    = 0
         $script:HS.IsVisible    = $false
         return
     }
 
-    if ($script:HS.OverlayLines -le 0) { return }
+    if ($script:HS.OverlayLines -le 0) {
+        if ($script:HS.GhostCols -gt 0) {
+            $e = [char]27
+            [Console]::Write("$e[K")
+            $script:HS.GhostCols = 0
+        }
+        return
+    }
 
     $e = [char]27
     $n = $script:HS.OverlayLines
@@ -261,6 +445,114 @@ function script:Clear-HSOverlay {
     $script:HS.IsVisible    = $false
 }
 
+function script:Get-HSGhostSuffix {
+    param([string]$Command, [string]$Typed)
+    # Only a real prefix may be previewed inline; a fuzzy or typo match needs the visible
+    # row (and its tier tag) before anyone can accept it.
+    if ([string]::IsNullOrEmpty($Command) -or [string]::IsNullOrEmpty($Typed)) { return '' }
+    if ($Command.Length -le $Typed.Length) { return '' }
+    if (-not $Command.StartsWith($Typed, [System.StringComparison]::OrdinalIgnoreCase)) { return '' }
+    return $Command.Substring($Typed.Length)
+}
+
+# Split a (possibly truncated) command into the typed part and the rest. With no literal
+# run to show - typo and fuzzy candidates - nothing is highlighted rather than the wrong
+# characters, which is what a plain "first N chars" split did once non-prefix results
+# reached the panel.
+function script:Split-HSMatchedCommand {
+    param([string]$Command, [string]$Typed)
+    $needle = if ($null -eq $Typed) { '' } else { $Typed.Trim() }
+    if ([string]::IsNullOrEmpty($needle)) {
+        return @{ Before = ''; Matched = ''; After = $Command }
+    }
+    $index = $Command.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($index -lt 0) {
+        return @{ Before = ''; Matched = ''; After = $Command }
+    }
+    $length = [Math]::Min($needle.Length, $Command.Length - $index)
+    return @{
+        Before  = $Command.Substring(0, $index)
+        Matched = $Command.Substring($index, $length)
+        After   = $Command.Substring($index + $length)
+    }
+}
+
+function script:Write-HSGhost {
+    param([array]$Suggestions, [int]$SelectedIndex, [string]$TypedSoFar, [int]$CursorLeft)
+    if (-not $Suggestions -or $Suggestions.Count -eq 0) { return }
+
+    $index = [Math]::Min([Math]::Max($SelectedIndex, 0), $Suggestions.Count - 1)
+    $s = $Suggestions[$index]
+    if (Test-HSDestructive -Suggestion $s) { return }
+
+    $ghost = Get-HSGhostSuffix -Command $s.command -Typed $TypedSoFar
+    if ([string]::IsNullOrEmpty($ghost)) { return }
+
+    $winW = Get-HSConsoleInt -Name WindowWidth -Default 80
+    $maxGhost = [Math]::Max(0, $winW - $CursorLeft - 2)
+    $ghost = Get-HSTruncateToWidth -Text $ghost -MaxCols $maxGhost
+    $cols = Get-HSDisplayWidth -Text $ghost
+    if ($cols -le 0) { return }
+
+    $e = [char]27
+    # Dim attribute instead of a hard-coded gray: it stays readable on light terminals too.
+    [Console]::Write("$e[2m$ghost$e[0m")
+    [Console]::SetCursorPosition($CursorLeft, [Console]::CursorTop)
+    $script:HS.OverlayLines = -1  # ghost mode flag
+    $script:HS.GhostCols    = $cols
+    $script:HS.IsVisible    = $true
+}
+
+# Next-word acceptance: inserting the whole command from an arrow key is too destructive
+# for a key people use to move the cursor; one word at a time is the Fish/PSReadLine habit.
+function script:Get-HSNextWordSuffix {
+    param([string]$Command, [string]$Typed)
+    $suffix = Get-HSGhostSuffix -Command $Command -Typed $Typed
+    if ([string]::IsNullOrEmpty($suffix)) { return '' }
+    $chunk = ''
+    $seenWord = $false
+    foreach ($ch in $suffix.ToCharArray()) {
+        if ([char]::IsWhiteSpace($ch)) {
+            if ($seenWord) { break }
+            $chunk += $ch
+        } else {
+            $seenWord = $true
+            $chunk += $ch
+        }
+    }
+    return $chunk
+}
+
+# Column budget for one row: prefix(3) + command + [gap + info] + gap + scroll(1) <= W.
+# Kept out of Draw-HSOverlay so the arithmetic that used to overflow narrow terminals is
+# unit-testable without a console, and so the command wins space before the annotations do.
+function script:Get-HSRowLayout {
+    param(
+        [int]$Width,
+        [switch]$Compact,
+        [string]$Info
+    )
+    $prefixW = 3
+    $gapW    = 1
+    $scrollW = 1
+
+    $infoW = 0
+    $cmdW  = $Width - $prefixW - $gapW - $scrollW
+    if (-not $Compact -and -not [string]::IsNullOrEmpty($Info)) {
+        $withInfo = $cmdW - $gapW - $script:HS_INFO_WIDTH
+        if ($withInfo -ge 12) {
+            $infoW = $script:HS_INFO_WIDTH
+            $cmdW  = $withInfo
+        }
+    }
+    if ($cmdW -lt 4) { $cmdW = 4 }
+
+    $total = $prefixW + $cmdW + $gapW + $scrollW
+    if ($infoW -gt 0) { $total += $gapW + $infoW }
+
+    return @{ CmdW = $cmdW; InfoW = $infoW; Total = $total }
+}
+
 function script:Draw-HSOverlay {
     param([array]$Suggestions, [int]$SelectedIndex, [string]$TypedSoFar)
 
@@ -273,10 +565,11 @@ function script:Draw-HSOverlay {
     $script:HS.SavedCursorCol = $curLeft
     $script:HS.SavedCursorTop = $curTop
 
-    $budget = Get-HSLayoutBudget -CursorTop $curTop
-    $W      = $budget.W
+    $budget  = Get-HSLayoutBudget -CursorTop $curTop
+    $W       = $budget.W
     $compact = $budget.Compact
-    $vpMax  = $budget.VpMax
+    $vpMax   = $budget.VpMax
+    $accent  = $budget.Accent
     $script:HS.ViewportSize = $vpMax
 
     $total  = $Suggestions.Count
@@ -288,65 +581,46 @@ function script:Draw-HSOverlay {
     $maxItems = [Math]::Max(0, $maxDown - 2)
     $vp       = [Math]::Min($vp, $maxItems)
 
-    # Fallback: ghost text when no space for overlay
+    # Fallback: ghost text when no space for a list
     if ($vp -le 0) {
-        $topCmd = $Suggestions[0].command
-        if ($topCmd.Length -gt $TypedSoFar.Length -and $topCmd.StartsWith($TypedSoFar, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $ghost = $topCmd.Substring($TypedSoFar.Length)
-            $maxGhost = [Math]::Max(0, (Get-HSConsoleInt -Name WindowWidth -Default 80) - $curLeft - 1)
-            $ghost = Get-HSTruncateToWidth -Text $ghost -MaxCols $maxGhost
-            [Console]::Write("$e[38;5;240m$ghost$e[0m")
-            [Console]::SetCursorPosition($curLeft, $curTop)
-            $script:HS.OverlayLines = -1  # ghost mode flag
-            $script:HS.IsVisible    = $true
+        if ($budget.GhostText) {
+            Write-HSGhost -Suggestions $Suggestions -SelectedIndex $SelectedIndex -TypedSoFar $TypedSoFar -CursorLeft $curLeft
         }
         return
     }
 
     $buf      = [System.Text.StringBuilder]::new()
     $lines    = 0
-    $matchLen = $TypedSoFar.Length
+    $prefixW  = 3
+    $gapW     = 1
+    $scrollW  = 1
 
-    # Row layout: " > " (3) + cmd + " " + countStr + " " + scrollHint (1)
-    # Reserve right side for count + scroll; rest for command.
-    $prefixW = 3
-    $gapW    = 1
-    $scrollW = 1
-
-    # Top separator with scroll indicator
-    $hasMore = $total -gt $vpMax
+    # More items exist than are drawn: say so. Comparing against VpMax alone hid the
+    # counter exactly when a short terminal squeezed the list, which is when users need it.
+    $hasMore = $total -gt $vp
     if ($hasMore) {
-        $pos = "$($SelectedIndex + 1)/$total"
+        $pos  = "$($SelectedIndex + 1)/$total"
         $posW = Get-HSDisplayWidth -Text $pos
         $sepW = [Math]::Max(0, $W - $posW - 1)
         $separator = ([string][char]0x2500 * $sepW)
-        $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;238m$separator $e[38;5;244m$pos$e[0m")
+        $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;${accent}m$separator$e[0m $e[2m$pos$e[0m")
     } else {
         $separator = [string][char]0x2500 * $W
-        $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;238m$separator$e[0m")
+        $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;${accent}m$separator$e[0m")
     }
     $lines++
 
-    # Draw visible items
     for ($i = 0; $i -lt $vp; $i++) {
         $idx = $offset + $i
         if ($idx -ge $total) { break }
 
         $s    = $Suggestions[$idx]
         $cmd  = $s.command.Replace("`r","").Replace("`n"," ").Replace("`t"," ").Trim()
-        $freq = if ($s.frequency) { [int]$s.frequency } else { 1 }
+        $risky = Test-HSDestructive -Suggestion $s
 
-        $src = if ($s.source) { $s.source } else { '' }
-        $freqStr = "{0}x" -f $freq
-        if ($compact) {
-            $countStr = $freqStr
-        } else {
-            switch ($src) {
-                'recent'   { $countStr = "$freqStr (recent)" }
-                'frequent' { $countStr = "$freqStr (most use)" }
-                default    { $countStr = "{0,5}x" -f $freq }
-            }
-        }
+        $info = if ($compact) { '' } else { Get-HSItemInfo -Suggestion $s }
+        $layout = Get-HSRowLayout -Width $W -Compact:$compact -Info $info
+        $cmdW   = $layout.CmdW
 
         $scrollHint = ' '
         if ($hasMore) {
@@ -354,42 +628,50 @@ function script:Draw-HSOverlay {
             elseif ($i -eq ($vp - 1) -and ($offset + $vp) -lt $total) { $scrollHint = [string][char]0x25BC }
         }
 
-        $countW = Get-HSDisplayWidth -Text $countStr
-        # prefix(3) + cmd + gap(1) + count + gap(1) + scroll(1) <= W
-        $cmdW = $W - $prefixW - $gapW - $countW - $gapW - $scrollW
-        if ($cmdW -lt 4) { $cmdW = 4 }
-
         $cmd = Get-HSTruncateToWidth -Text $cmd -MaxCols $cmdW
-
-        $mLen     = [Math]::Min($matchLen, $cmd.Length)
-        # Match highlight on truncated cmd (char-based; display-safe enough for ASCII commands)
-        $matchPrt = $cmd.Substring(0, $mLen)
-        $restPrt  = if ($cmd.Length -gt $mLen) { $cmd.Substring($mLen) } else { '' }
-        # Pad after full command display width
+        $parts = Split-HSMatchedCommand -Command $cmd -Typed $TypedSoFar
         $padLen = $cmdW - (Get-HSDisplayWidth -Text $cmd)
         if ($padLen -lt 0) { $padLen = 0 }
         $pad = ' ' * $padLen
 
-        $null = $buf.Append("$e[1B$e[1G$e[2K")
-        if ($idx -eq $SelectedIndex) {
-            $null = $buf.Append("$e[48;5;236m$e[38;5;15m > $matchPrt$e[38;5;51m$restPrt$pad $e[38;5;244m$countStr $scrollHint$e[0m")
+        $isSelected = $idx -eq $SelectedIndex
+        # Bold marks what the user typed; dim marks what HintShell added. Unselected rows
+        # keep the terminal's own foreground colour, because the previous forced bright
+        # white disappeared on light themes. Risk is red AND the '!' in the info column,
+        # never colour alone.
+        $matchStyle = if ($risky) { "$e[1;31m" } else { "$e[1m" }
+        $restStyle  = if ($isSelected) { "$e[38;5;15m" } else { "$e[2m" }
+        $restEnd    = if ($isSelected) { "$e[39m" } else { "$e[22m" }
+        $cmdText = "$restStyle$($parts.Before)$matchStyle$($parts.Matched)$e[22m$($parts.After)$restEnd$pad"
+        $prefix  = if ($isSelected) { ' > ' } else { '   ' }
+
+        if ($layout.InfoW -gt 0) {
+            $infoPadded = Get-HSPadToWidth -Text (Get-HSTruncateToWidth -Text $info -MaxCols $layout.InfoW) -Width $layout.InfoW
+            $body = "$prefix$cmdText $e[2m$infoPadded$e[22m $scrollHint"
         } else {
-            $null = $buf.Append("$e[38;5;255m   $matchPrt$e[38;5;242m$restPrt$pad $e[38;5;239m$countStr $e[38;5;238m$scrollHint$e[0m")
+            $body = "$prefix$cmdText $scrollHint"
+        }
+
+        $null = $buf.Append("$e[1B$e[1G$e[2K")
+        if ($isSelected) {
+            $null = $buf.Append("$e[48;5;236m$e[38;5;15m$body$e[0m")
+        } else {
+            $null = $buf.Append("$body$e[0m")
         }
         $lines++
     }
 
-    # Footer (Command Description) — no emoji (display-width safe)
-    $selCmdObj = $Suggestions[$SelectedIndex]
-    $descText = if (-not [string]::IsNullOrWhiteSpace($selCmdObj.description)) { $selCmdObj.description } else { "No description available" }
+    # Footer: what the selected command does, plus the keys that act on it.
+    $selIndex = [Math]::Min([Math]::Max($SelectedIndex, 0), $total - 1)
+    $descText = Get-HSFooterText -Suggestion $Suggestions[$selIndex]
 
-    $footerPrefix = " > "
-    $prefixDisp = Get-HSDisplayWidth -Text $footerPrefix
-    $maxDescCols = [Math]::Max(4, $W - $prefixDisp)
+    $hint = if ($compact) { '' } else { 'Tab/Right accept . Alt+Right word' }
+    $hintGap = if ([string]::IsNullOrEmpty($hint)) { 0 } else { 2 }
+    $hintW = Get-HSDisplayWidth -Text $hint
+    $maxDescCols = [Math]::Max(4, $W - 1 - $hintGap - $hintW)
     $descText = Get-HSTruncateToWidth -Text $descText -MaxCols $maxDescCols
-    $hintText = "$footerPrefix$descText"
-
-    $null = $buf.Append("$e[1B$e[1G$e[2K$e[38;5;243m$hintText$e[0m")
+    $descPad = ' ' * [Math]::Max(0, $W - 1 - (Get-HSDisplayWidth -Text $descText) - $hintGap - $hintW)
+    $null = $buf.Append("$e[1B$e[1G$e[2K$e[2m $descText$e[22m$descPad$e[2m$hint$e[0m")
     $lines++
 
     # If previous overlay had more lines than current, clear trailing lines atomically

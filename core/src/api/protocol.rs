@@ -69,6 +69,13 @@ pub struct SuggestionItem {
     pub score: f64,
     pub frequency: i64,
     pub source: String,
+    /// Match quality: 0 prefix, 1 contextual, 2 substring, 3 typo-tolerant, 4 fuzzy.
+    /// Defaults keep older shell integrations working against a newer daemon.
+    #[serde(default)]
+    pub tier: u8,
+    /// "normal" or "destructive"; integrations must warn before a destructive acceptance.
+    #[serde(default)]
+    pub risk: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,10 +209,21 @@ mod tests {
             score: 95.0,
             frequency: 10,
             source: "user".to_string(),
+            tier: 0,
+            risk: "normal".to_string(),
         }]);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("git commit"));
         assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn suggestion_item_deserializes_without_tier_or_risk() {
+        // Older integrations may omit the presentation hints; they must not break parsing.
+        let json = r#"{"command":"rm -rf build","score":10.0,"frequency":1,"source":"history"}"#;
+        let item: SuggestionItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.tier, 0);
+        assert_eq!(item.risk, "");
     }
 
     #[test]

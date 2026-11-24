@@ -60,8 +60,14 @@ pub fn hook_script() -> String {
             .to_string(),
         "}\n".to_string(),
         "precmd_functions=(${precmd_functions:#_hintshell_precmd} _hintshell_precmd)\n".to_string(),
-        "if [[ -n \"${HINTSHELL_LIVE_ZSH:-}\" ]]; then\n".to_string(),
-        "    _hintshell_emit_prompt() { printf '\\036HINTSHELL_CWD:%s\\037\\036HINTSHELL_PROMPT\\037' \"$PWD\"; }\n".to_string(),
+        // Markers ride inside a private OSC sequence (see the bash hook for why bare control
+        // bytes break under Windows ConPTY), and only for the shell the wrapper drives: the
+        // token is consumed here so a nested `zsh` cannot emit markers nobody filters.
+        "if [[ -n \"${HINTSHELL_MARKER_TOKEN:-}\" ]]; then unset HINTSHELL_MARKER_TOKEN; _hintshell_markers_owned=1; fi\n".to_string(),
+        "if [[ -n \"${_hintshell_markers_owned:-}\" ]]; then\n".to_string(),
+        "    _hintshell_emit_prompt() { printf '\\033]5522;hintshell_cwd=%s\\007\\033]5522;hintshell_prompt\\007' \"$PWD\"; }\n".to_string(),
+        // Continuation prompt (open quote / heredoc): the wrapper stops shadowing the line.
+        "    PROMPT2=$'\\033]5522;hintshell_continuation\\007'\"${PROMPT2-... }\"\n".to_string(),
         "    precmd_functions=(${precmd_functions:#_hintshell_emit_prompt} _hintshell_emit_prompt)\nfi\n".to_string(),
         "\n# Auto-start daemon\n".to_string(),
         "_hintshell_ensure_daemon\n".to_string(),
@@ -117,5 +123,8 @@ mod tests {
         let hook = hook_script();
         assert!(hook.contains("HINTSHELL_LIVE_ZSH"));
         assert!(hook.contains("_hintshell_emit_prompt"));
+        // OSC-delimited, never a bare control byte (see the bash hook test).
+        assert!(hook.contains("PROMPT2=$'\\033]5522;hintshell_continuation\\007'"));
+        assert!(!hook.contains("\\036HINTSHELL"));
     }
 }

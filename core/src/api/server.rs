@@ -367,6 +367,8 @@ fn process_request(
                     score: s.score,
                     frequency: s.frequency,
                     source: s.source,
+                    tier: s.tier,
+                    risk: s.risk.as_str().to_string(),
                 })
                 .collect();
             info!("Returning {} suggestions", items.len());
@@ -418,6 +420,25 @@ fn process_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shipped_powershell_catalogue_matches_the_embedded_one() {
+        // `hs init` copies the module file to ~/.hintshell/default-commands.json and the
+        // daemon prefers that file over the embedded catalogue, so a stale copy silently
+        // reverts every description edit for installed users.
+        const EMBEDDED: &str = include_str!("../../default-commands.json");
+        let shipped_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../integrations/powershell/HintShellModule/default-commands.json"
+        );
+        let shipped = std::fs::read_to_string(shipped_path)
+            .unwrap_or_else(|e| panic!("missing shipped catalogue {shipped_path}: {e}"));
+        assert_eq!(
+            EMBEDDED.replace("\r\n", "\n"),
+            shipped.replace("\r\n", "\n"),
+            "default-commands.json has drifted between core/ and the PowerShell module"
+        );
+    }
 
     #[test]
     fn suggest_request_returns_contextual_path_candidate() {

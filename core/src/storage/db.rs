@@ -559,6 +559,22 @@ mod tests {
     }
 
     #[test]
+    fn re_seeding_refreshes_starter_descriptions_for_existing_installs() {
+        // Descriptions are user-visible copy; an upgrade must not leave the old wording
+        // stored forever just because the row already exists.
+        let store = HistoryStore::in_memory().unwrap();
+        store
+            .seed_defaults(r#"{ "git": [{ "command": "git pull", "description": "old wording" }] }"#)
+            .unwrap();
+        store
+            .seed_defaults(r#"{ "git": [{ "command": "git pull", "description": "new wording" }] }"#)
+            .unwrap();
+
+        let results = store.search_by_prefix("git pull", 10).unwrap();
+        assert_eq!(results[0].description.as_deref(), Some("new wording"));
+    }
+
+    #[test]
     fn test_prune_user_history_preserves_defaults_and_frequent_rows() {
         let store = HistoryStore::in_memory().unwrap();
         let json = r#"{ "git": [{ "command": "git pull", "description": "pull changes" }] }"#;

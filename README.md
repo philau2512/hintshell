@@ -94,9 +94,21 @@ source ~/.bashrc
 
 After `hs init`, opening a normal interactive Git Bash or WSL2 Bash session automatically starts `hintshell bash`, which renders a local live overlay as you type. `fzf` is not required for this live mode.
 
-- **↑ / ↓** navigate HintShell suggestions; **Esc** closes the overlay; **Enter** executes through Bash.
-- **Tab** accepts only a compatible command suggestion. Path input such as `cd src/comp`, flags such as `git --ver`, and empty overlays are forwarded to Bash's native completion.
-- The overlay adapts near the bottom of the terminal: it shows fewer rows when space is limited and stays hidden when a complete frame would scroll the terminal.
+| Key | Behaviour |
+|---|---|
+| **↑ / ↓** | Move through the suggestion list. With no overlay open they stay Bash's own history keys. |
+| **Alt+↑ / Alt+↓** | Bash readline history, so the panel never competes with history for the same arrow. |
+| **Tab** | Accept a compatible command suggestion. Path input such as `cd src/comp`, flags such as `git --ver`, and empty overlays are forwarded to Bash's native completion. |
+| **→ / End** | Accept the inline ghost hint — the rest of the top compatible suggestion. Never for a destructive command, which needs the visible Tab path. |
+| **Alt+→ / Ctrl+→** | Accept only the next word, Fish-style. |
+| **Esc** | Hide the panel for the current line. It stays hidden until **Enter** or **Ctrl+Space**, so it does not pop back on the next keystroke. |
+| **Ctrl+Space** | Bring the panel back and re-query without typing another character. |
+| **Enter** | Execute through Bash. |
+
+Everything else reaches Bash untouched: readline chords (**Ctrl+R**, **Ctrl+D**, **Ctrl+L**, **Ctrl+A/E/W/U/K/Y**, **Ctrl+P/N**), Meta bindings (**Alt+B**, **Alt+F**, **Alt+D**, **Alt+U**…), word motions (**Ctrl+←/→**), **Shift+Tab**, **Insert**, **PageUp/PageDown** and **F1–F12**.
+
+- The overlay adapts to the terminal: it caps its width so no row wraps, drops the description column when narrow, shows fewer rows near the bottom, and falls back to a single inline ghost hint when a full frame would not fit (obeying `ghost_text`).
+- A continued line (`PS2`, for example an unclosed quote) clears the panel instead of suggesting against a stale buffer, and the working directory is reported at every prompt, so `cd` changes are reflected in contextual suggestions.
 - To bypass the wrapper for one shell, run:
 
 ```bash
@@ -143,6 +155,7 @@ hs init
 
 Open a new terminal after initialization. The wrapper starts the same shell as a child through the Unix pseudo-terminal backend. It preserves the opening directory and synchronizes the current directory after each prompt, so contextual suggestions follow `cd` changes.
 
+- The key bindings are the Git Bash table above: **↑/↓** and **Alt+↑/↓**, **Tab**, **→** (inline hint), **Alt+→** (next word), **Esc** (sticky hide) and **Ctrl+Space** (re-open).
 - **Tab** keeps native Bash/Zsh path and flag completion authoritative; HintShell accepts only compatible command-prefix suggestions.
 - **Interactive programs** such as `gh auth login`, `fzf`, `vim`, and `nano` receive raw terminal input while running; the overlay resumes automatically at the next prompt.
 - **Bash escape hatch:** `HINTSHELL_DISABLE_AUTO_BASH=1 bash`
@@ -167,27 +180,59 @@ Each request includes the current working directory and shell. HintShell merges 
 
 ### 🎨 Customization (`~/.hintshell/config.toml`)
 
-HintShell creates a configuration file at `~/.hintshell/config.toml` automatically on initial setup:
+HintShell creates a configuration file at `~/.hintshell/config.toml` automatically on initial setup. **The same file styles the live Bash/Zsh overlay and the PowerShell module**, so one edit applies to every surface.
 
 ```toml
-# Popup border color palette:
-# - "apple" / "siri" / "glow" (Apple Intelligence 24-bit TrueColor Cyber Glow)
-# - "rainbow" / "gemini" (Vibrant multi-color spectrum)
-# - Solid tones: "purple" (default), "blue", "cyan", "green", "yellow", "orange", "pink", "magenta", "minimal"
+# Frame colour. Aliases are accepted; an unknown name falls back to purple and `hs config` says so.
+# - Apple-style glow (24-bit gradient): "apple" | "siri" | "apple-intelligence" | "glow" | "neon"
+# - Multi-colour spectrum (24-bit gradient): "rainbow" | "gemini" | "gradient" | "aurora"
+# - Solid tones: "purple" (default) | "blue" | "cyan" | "green" | "yellow" | "gold" | "orange"
+#                "pink" | "rose" | "magenta" | "red" | "minimal" | "gray" | "grey"
 border_color = "apple"
 
-# Maximum number of suggestions shown in popup overlay (default: 6)
+# Rows shown in the overlay (default: 6). Clamped to 3..=10; anything outside is reported.
 max_visible = 6
 
-# Enable inline ghost text completion preview (default: true)
+# Inline ghost text next to the cursor. Also the fallback used when the terminal is too
+# short or too narrow to draw a full frame (default: true).
 ghost_text = true
 ```
 
+```bash
+hs config   # effective values, the palette, 24-bit support, and any setting being ignored
+```
+
+Gradient presets are painted with 24-bit colour. When `COLORTERM` does not advertise `truecolor`/`24bit` (legacy conhost, `TERM=xterm-256color`), the frame degrades to the closest 256-colour code instead of showing escape-sequence noise.
+
+### 🔎 How to read a suggestion row
+
+The right-hand column answers "where did this come from?", "how did it match?" and "how often?". The same vocabulary is used in Bash, Zsh and PowerShell.
+
+| Marker | Meaning |
+|---|---|
+| `here` | You ran it in this directory before — the strongest signal. |
+| `history` | You ran it somewhere else before. |
+| `most used` | One of your most frequent commands. |
+| `starter` | From the built-in catalogue of 600+ documented commands. |
+| `path` `scripts` `git` `docker` `ssh hosts` `folders` `cargo` | Contextual candidate generated from a real path, project script, branch, container, host, folder or crate. |
+| *(no tag)* | Your input is an actual prefix of the command. |
+| `~` | Substring or fuzzy match — letters present but not adjacent; read the row before accepting. |
+| `≈` | Typo-tolerant match (`gti` → `git`). |
+| `Nx` | Used N times (only shown when the counter is real; contextual candidates show none). |
+| `!` and `[!] risky` | Destructive command (`rm -rf`, `git reset --hard`, `docker system prune -af`, `terraform destroy`…). **→** and **Alt+→** refuse it: use **Tab** on the visible row so you have read it first. |
+
+The description line explains what the selected command does, and falls back to `used Nx · here` or `no description` so it is never an empty gap.
+
 ### PowerShell (Windows/Unix)
-**Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type.
-- **↑ / ↓** : Navigate
-- **Tab** : Accept
-- **Esc** : Close
+
+**Real-time Overlay**: Suggestions appear automatically as a floating panel beneath your cursor as you type, using the same `~/.hintshell/config.toml`, the same labels and the same tiers as the Bash overlay.
+
+- **↑ / ↓** navigate the list; with no panel open they stay history keys.
+- **Tab** accept · **→** accept the inline hint · **Alt+→** accept one word.
+- **Esc** hides the panel for the current line (sticky); **Ctrl+Space** brings it back.
+- **Ctrl+R** is still PowerShell's own history search, and non-ASCII input (e.g. Vietnamese folder names) is suggested like anything else.
+
+Text uses bold/dim and underline as well as colour, and the panel no longer forces a bright foreground, so rows stay readable on light themes.
 
 ---
 
@@ -240,6 +285,7 @@ npm uninstall -g hintshell
 hs status      # Check if the daemon is running and see stats
 hs start       # Manually start the daemon
 hs stop        # Stop the daemon
+hs config      # Show the effective overlay config and report values it ignores
 hs update      # Stop daemon, npm install -g, init, restart
 hs uninstall   # Completely remove shell integration and binaries
 ```

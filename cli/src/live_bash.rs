@@ -15,6 +15,7 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use hintshell_core::api::protocol::{HintShellRequest, SuggestionItem};
+use hintshell_core::engine::matcher::Risk;
 
 #[cfg(windows)]
 use conpty::ProcessOptions;
@@ -97,6 +98,10 @@ enum UnixInputMode {
 struct OverlayState {
     buffer: String,
     tracking_valid: bool,
+    /// Esc hides the panel for the rest of this input line; typing must not bring it back.
+    dismissed: bool,
+    /// Display columns of dim ghost text drawn after the cursor (narrow/short terminals).
+    ghost_cols: usize,
     generation: u64,
     selected: usize,
     suggestions: Vec<SuggestionItem>,
@@ -108,6 +113,8 @@ impl OverlayState {
         Self {
             buffer: String::new(),
             tracking_valid: true,
+            dismissed: false,
+            ghost_cols: 0,
             generation: 0,
             selected: 0,
             suggestions: Vec::new(),
@@ -187,6 +194,10 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
     // Preserve the Git Bash session environment before setting the wrapper marker.
     command.envs(env::vars_os());
     command.env(shell.marker(), "1");
+    // One-shot token proving this shell is the one the wrapper pumps. The hook consumes it,
+    // so a nested `bash` (or an older wrapper that cannot filter markers) emits nothing and no
+    // marker text can end up on screen as garbage.
+    command.env(MARKER_TOKEN_ENV, std::process::id().to_string());
     let interactive = args.is_empty() || args.iter().any(|argument| argument == "-i");
     if args.is_empty() {
         command.args(["--login", "-i"]);
@@ -261,8 +272,16 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                     }
                     clear_overlay(&mut state, &output)?;
                     state.tracking_valid = true;
+                    state.dismissed = false;
                     state.buffer.clear();
                     state.clear();
+                }
+                ShellEvent::Continuation => {
+                    clear_overlay(&mut state, &output)?;
+                    state.buffer.clear();
+                    state.clear();
+                    state.tracking_valid = false;
+                    state.generation = state.generation.wrapping_add(1);
                 }
                 ShellEvent::Closed => {
                     clear_overlay(&mut state, &output)?;
@@ -339,6 +358,10 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
     // Preserve the terminal directory selected by the host terminal.
     command.cwd(cwd);
     command.env(shell.marker(), "1");
+    // One-shot token proving this shell is the one the wrapper pumps. The hook consumes it,
+    // so a nested `bash` (or an older wrapper that cannot filter markers) emits nothing and no
+    // marker text can end up on screen as garbage.
+    command.env(MARKER_TOKEN_ENV, std::process::id().to_string());
     if shell == LiveShell::Bash && is_wsl_runtime() {
         command.env("HINTSHELL_LIVE_BASH_WSL", "1");
     }
@@ -397,6 +420,14 @@ pub fn run(shell: LiveShell, args: Vec<String>) -> Result<(), String> {
                     state.clear();
                     state.buffer.clear();
                     state.tracking_valid = true;
+                    state.dismissed = false;
+                    state.generation = state.generation.wrapping_add(1);
+                }
+                ShellEvent::Continuation => {
+                    clear_overlay(&mut state, &output)?;
+                    state.buffer.clear();
+                    state.clear();
+                    state.tracking_valid = false;
                     state.generation = state.generation.wrapping_add(1);
                 }
                 ShellEvent::Closed => running = false,
@@ -478,7 +509,9 @@ fn run_unix_batch_process(
     loop {
         match events.recv_timeout(Duration::from_millis(20)) {
             Ok(ShellEvent::Output(bytes)) => write_terminal(output, &bytes)?,
-            Ok(ShellEvent::StartupPhase(_)) | Ok(ShellEvent::PromptReady) => {}
+            Ok(ShellEvent::StartupPhase(_))
+            | Ok(ShellEvent::PromptReady)
+            | Ok(ShellEvent::Continuation) => {}
             Ok(ShellEvent::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout)
                 if process
@@ -536,7 +569,7 @@ fn run_batch_process(
     loop {
         match events.recv_timeout(Duration::from_millis(20)) {
             Ok(ShellEvent::Output(bytes)) => write_terminal(output, &bytes)?,
-            Ok(ShellEvent::StartupPhase(_)) | Ok(ShellEvent::PromptReady) => {}
+            Ok(ShellEvent::StartupPhase(_)) | Ok(ShellEvent::PromptReady) | Ok(ShellEvent::Continuation) => {}
             Ok(ShellEvent::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) if !process.is_alive() => {
                 while let Ok(ShellEvent::Output(bytes)) = events.try_recv() {
@@ -625,14 +658,69 @@ enum ShellEvent {
     Output(Vec<u8>),
     StartupPhase(String),
     PromptReady,
+    /// readline is showing its continuation prompt: an open quote or heredoc, so the
+    /// shadowed buffer no longer describes anything the suggestion engine can rank.
+    Continuation,
     Closed,
 }
 
-const CWD_MARKER_START: &[u8] = b"\x1eHINTSHELL_CWD:";
-const CWD_MARKER_END: &[u8] = b"\x1f";
-const STARTUP_PHASE_MARKER_START: &[u8] = b"\x1eHINTSHELL_STARTUP_PHASE:";
-const STARTUP_PHASE_MARKER_END: &[u8] = b"\x1f";
-const PROMPT_MARKER: &[u8] = b"\x1eHINTSHELL_PROMPT\x1f";
+/// Marker wire format: a private OSC sequence (5522) terminated by BEL.
+///
+/// Bare control bytes cannot be used on Windows. ConPTY re-maps them through the console
+/// codepage, so the byte 0x1e arrives as the printable glyph "▲" and no filter recognises it
+/// — that is how "▲HINTSHELL_CWD:C:\Users\me▼" landed on users' screens. Escape sequences
+/// pass through ConPTY unchanged, and a terminal that does not implement OSC 5522 ignores it,
+/// so even a leaked marker is invisible instead of garbage.
+const OSC_CWD: &[u8] = b"\x1b]5522;hintshell_cwd=";
+const OSC_PROMPT: &[u8] = b"\x1b]5522;hintshell_prompt";
+const OSC_CONTINUATION: &[u8] = b"\x1b]5522;hintshell_continuation";
+const OSC_PHASE: &[u8] = b"\x1b]5522;hintshell_phase=";
+const OSC_END: &[u8] = b"\x07";
+
+/// Legacy RS/US delimited shapes, still stripped so a shell that started with an older hook
+/// does not print marker text into a newer wrapper.
+const LEGACY_CWD: &[u8] = b"\x1eHINTSHELL_CWD:";
+const LEGACY_PROMPT: &[u8] = b"\x1eHINTSHELL_PROMPT\x1f";
+const LEGACY_CONTINUATION: &[u8] = b"\x1eHINTSHELL_CONTINUATION\x1f";
+const LEGACY_PHASE: &[u8] = b"\x1eHINTSHELL_STARTUP_PHASE:";
+const LEGACY_END: &[u8] = b"\x1f";
+
+/// The same legacy shapes after Windows ConPTY has re-mapped the control bytes through the
+/// console codepage: 0x1e arrives as "\u{25b2}" and 0x1f as "\u{25bc}". A stale hook or a stale
+/// generated rcfile cannot be updated from the wrapper, so their markers are neutralised here.
+/// The "HINTSHELL" keyword makes a false match on ordinary shell output practically impossible.
+const GLYPH_CWD: &[u8] = "\u{25b2}HINTSHELL_CWD:".as_bytes();
+const GLYPH_PROMPT: &[u8] = "\u{25b2}HINTSHELL_PROMPT\u{25bc}".as_bytes();
+const GLYPH_CONTINUATION: &[u8] = "\u{25b2}HINTSHELL_CONTINUATION\u{25bc}".as_bytes();
+const GLYPH_PHASE: &[u8] = "\u{25b2}HINTSHELL_STARTUP_PHASE:".as_bytes();
+const GLYPH_END: &[u8] = "\u{25bc}".as_bytes();
+
+/// (start, end) shapes of one marker; an empty end means the start is the whole marker.
+type MarkerForms<'a> = &'a [(&'a [u8], &'a [u8])];
+
+const CWD_FORMS: MarkerForms = &[
+    (OSC_CWD, OSC_END),
+    (LEGACY_CWD, LEGACY_END),
+    (GLYPH_CWD, GLYPH_END),
+];
+const PROMPT_FORMS: MarkerForms = &[
+    (OSC_PROMPT, OSC_END),
+    (LEGACY_PROMPT, &[]),
+    (GLYPH_PROMPT, &[]),
+];
+const CONTINUATION_FORMS: MarkerForms = &[
+    (OSC_CONTINUATION, OSC_END),
+    (LEGACY_CONTINUATION, &[]),
+    (GLYPH_CONTINUATION, &[]),
+];
+const PHASE_FORMS: MarkerForms = &[
+    (OSC_PHASE, OSC_END),
+    (LEGACY_PHASE, LEGACY_END),
+    (GLYPH_PHASE, GLYPH_END),
+];
+
+/// Environment variable carrying the one-shot marker token from the wrapper to its shell.
+pub const MARKER_TOKEN_ENV: &str = "HINTSHELL_MARKER_TOKEN";
 
 fn start_output_pump(
     mut reader: Box<dyn Read + Send>,
@@ -640,6 +728,7 @@ fn start_output_pump(
     cwd: Option<Arc<Mutex<Option<String>>>>,
 ) {
     let mut prompt_marker_buffer = Vec::new();
+    let mut continuation_marker_buffer = Vec::new();
     let mut cwd_marker_buffer = Vec::new();
     let mut startup_phase_marker_buffer = Vec::new();
     thread::spawn(move || {
@@ -651,7 +740,11 @@ fn start_output_pump(
                     let bytes = filter_cwd_markers(
                         &filter_startup_phase_markers(
                             &filter_prompt_markers(
-                                &buffer[..read],
+                                &filter_continuation_markers(
+                                    &buffer[..read],
+                                    &mut continuation_marker_buffer,
+                                    &events,
+                                ),
                                 &mut prompt_marker_buffer,
                                 &events,
                             ),
@@ -670,6 +763,9 @@ fn start_output_pump(
         if !prompt_marker_buffer.is_empty() {
             let _ = events.send(ShellEvent::Output(prompt_marker_buffer));
         }
+        if !continuation_marker_buffer.is_empty() {
+            let _ = events.send(ShellEvent::Output(continuation_marker_buffer));
+        }
         if !cwd_marker_buffer.is_empty() {
             let _ = events.send(ShellEvent::Output(cwd_marker_buffer));
         }
@@ -677,32 +773,90 @@ fn start_output_pump(
     });
 }
 
-fn filter_prompt_markers(
+/// Strip every known shape of one marker from the stream, reporting the payload (empty for
+/// fixed markers) through `on_match`. A marker that has only partly arrived is held back
+/// until the next read, so a PTY that splits a sequence anywhere still prints clean text.
+fn filter_marker_forms(
     bytes: &[u8],
     pending: &mut Vec<u8>,
-    events: &mpsc::Sender<ShellEvent>,
+    forms: MarkerForms,
+    mut on_match: impl FnMut(&[u8]),
 ) -> Vec<u8> {
     pending.extend_from_slice(bytes);
     let mut output = Vec::new();
 
     loop {
-        let Some(start) = pending
-            .windows(PROMPT_MARKER.len())
-            .position(|window| window == PROMPT_MARKER)
-        else {
-            let keep = marker_prefix_len(pending, PROMPT_MARKER);
+        // (marker start, payload start, payload end, next byte to inspect)
+        let mut found: Option<(usize, usize, usize, usize)> = None;
+        let mut waiting_for_end = None;
+
+        for (start, end) in forms {
+            let Some(at) = find_subsequence(pending, start) else {
+                continue;
+            };
+            if end.is_empty() {
+                let next = at + start.len();
+                if found.is_none_or(|previous| at < previous.0) {
+                    found = Some((at, next, next, next));
+                }
+                continue;
+            }
+            let payload_start = at + start.len();
+            let Some(relative_end) = find_subsequence(&pending[payload_start..], end) else {
+                // Started but not finished: print what came before and keep the rest.
+                waiting_for_end = Some(at);
+                break;
+            };
+            let payload_end = payload_start + relative_end;
+            let next = payload_end + end.len();
+            if found.is_none_or(|previous| at < previous.0) {
+                found = Some((at, payload_start, payload_end, next));
+            }
+        }
+
+        let hold_from = waiting_for_end.filter(|at| found.is_none_or(|matched| *at <= matched.0));
+        if let Some(at) = hold_from {
+            output.extend_from_slice(&pending[..at]);
+            pending.drain(..at);
+            return output;
+        }
+
+        let Some((at, payload_start, payload_end, next)) = found else {
+            let keep = forms
+                .iter()
+                .map(|(start, _)| marker_prefix_len(pending, start))
+                .max()
+                .unwrap_or(0);
             let flush = pending.len().saturating_sub(keep);
             output.extend_from_slice(&pending[..flush]);
             pending.drain(..flush);
-            break;
+            return output;
         };
 
-        output.extend_from_slice(&pending[..start]);
-        pending.drain(..start + PROMPT_MARKER.len());
-        let _ = events.send(ShellEvent::PromptReady);
+        output.extend_from_slice(&pending[..at]);
+        on_match(&pending[payload_start..payload_end]);
+        pending.drain(..next);
     }
+}
 
-    output
+fn filter_continuation_markers(
+    bytes: &[u8],
+    pending: &mut Vec<u8>,
+    events: &mpsc::Sender<ShellEvent>,
+) -> Vec<u8> {
+    filter_marker_forms(bytes, pending, CONTINUATION_FORMS, |_| {
+        let _ = events.send(ShellEvent::Continuation);
+    })
+}
+
+fn filter_prompt_markers(
+    bytes: &[u8],
+    pending: &mut Vec<u8>,
+    events: &mpsc::Sender<ShellEvent>,
+) -> Vec<u8> {
+    filter_marker_forms(bytes, pending, PROMPT_FORMS, |_| {
+        let _ = events.send(ShellEvent::PromptReady);
+    })
 }
 
 fn filter_startup_phase_markers(
@@ -710,33 +864,11 @@ fn filter_startup_phase_markers(
     pending: &mut Vec<u8>,
     events: &mpsc::Sender<ShellEvent>,
 ) -> Vec<u8> {
-    pending.extend_from_slice(bytes);
-    let mut output = Vec::new();
-
-    loop {
-        let Some(start) = find_subsequence(pending, STARTUP_PHASE_MARKER_START) else {
-            let keep = marker_prefix_len(pending, STARTUP_PHASE_MARKER_START);
-            let flush = pending.len().saturating_sub(keep);
-            output.extend_from_slice(&pending[..flush]);
-            pending.drain(..flush);
-            break;
-        };
-        output.extend_from_slice(&pending[..start]);
-        let phase_start = start + STARTUP_PHASE_MARKER_START.len();
-        let Some(relative_end) =
-            find_subsequence(&pending[phase_start..], STARTUP_PHASE_MARKER_END)
-        else {
-            pending.drain(..start);
-            break;
-        };
-        let phase_end = phase_start + relative_end;
-        if let Ok(phase) = std::str::from_utf8(&pending[phase_start..phase_end]) {
+    filter_marker_forms(bytes, pending, PHASE_FORMS, |payload| {
+        if let Ok(phase) = std::str::from_utf8(payload) {
             let _ = events.send(ShellEvent::StartupPhase(phase.to_string()));
         }
-        pending.drain(..phase_end + STARTUP_PHASE_MARKER_END.len());
-    }
-
-    output
+    })
 }
 
 fn marker_prefix_len(pending: &[u8], marker: &[u8]) -> usize {
@@ -752,46 +884,13 @@ fn filter_cwd_markers(
     pending: &mut Vec<u8>,
     cwd: Option<&Arc<Mutex<Option<String>>>>,
 ) -> Vec<u8> {
-    pending.extend_from_slice(bytes);
-    let mut output = Vec::new();
-
-    loop {
-        let Some(start) = pending
-            .windows(CWD_MARKER_START.len())
-            .position(|window| window == CWD_MARKER_START)
-        else {
-            let max_prefix = pending.len().min(CWD_MARKER_START.len().saturating_sub(1));
-            let keep = (1..=max_prefix)
-                .rev()
-                .find(|length| pending[pending.len() - length..] == CWD_MARKER_START[..*length])
-                .unwrap_or(0);
-            let flush = pending.len().saturating_sub(keep);
-            output.extend_from_slice(&pending[..flush]);
-            pending.drain(..flush);
-            break;
-        };
-
-        output.extend_from_slice(&pending[..start]);
-        if let Some(end) =
-            find_subsequence(&pending[start + CWD_MARKER_START.len()..], CWD_MARKER_END)
-        {
-            let path_start = start + CWD_MARKER_START.len();
-            let path_end = path_start + end;
-            if let Ok(path) = std::str::from_utf8(&pending[path_start..path_end]) {
-                if let Some(cwd) = cwd {
-                    if let Ok(mut current) = cwd.lock() {
-                        *current = Some(path.to_string());
-                    }
-                }
-            }
-            pending.drain(..path_end + CWD_MARKER_END.len());
-        } else {
-            pending.drain(..start);
-            break;
+    filter_marker_forms(bytes, pending, CWD_FORMS, |payload| {
+        let Some(cwd) = cwd else { return };
+        let Ok(path) = std::str::from_utf8(payload) else { return };
+        if let Ok(mut current) = cwd.lock() {
+            *current = Some(path.to_string());
         }
-    }
-
-    output
+    })
 }
 
 fn find_subsequence(bytes: &[u8], needle: &[u8]) -> Option<usize> {
@@ -847,7 +946,7 @@ fn start_query_worker(
 
             let cwd = cwd.lock().ok().and_then(|current| current.clone());
             let request = query_request(buffer.clone(), cwd, shell);
-            let raw_suggestions = runtime
+            let mut raw_suggestions = runtime
                 .block_on(async {
                     tokio::time::timeout(QUERY_TIMEOUT, crate::send_request(&request))
                         .await
@@ -856,32 +955,34 @@ fn start_query_worker(
                         .and_then(|response| response.suggestions)
                         .unwrap_or_default()
                 });
+            for suggestion in &mut raw_suggestions {
+                mark_destructive_without_daemon_support(suggestion);
+            }
 
-            let buffer_lower = buffer.to_ascii_lowercase();
-            // 1. First priority: commands starting with the typed input (prefix match)
-            let prefix_matches: Vec<SuggestionItem> = raw_suggestions
-                .iter()
-                .filter(|s| s.command.to_ascii_lowercase().starts_with(&buffer_lower))
-                .cloned()
-                .collect();
-
-            let suggestions = if !prefix_matches.is_empty() {
-                prefix_matches
-            } else {
-                // 2. Fallback: if no command starts with input, match commands containing input (substring / contains)
-                raw_suggestions
-                    .into_iter()
-                    .filter(|s| s.command.to_ascii_lowercase().contains(&buffer_lower))
-                    .collect()
-            };
-
+            // The engine already ranked candidates by match tier (prefix > contextual >
+            // substring > typo-tolerant > fuzzy). Re-filtering to prefix/substring here hid
+            // typo-tolerant and contextual results, so advertised features never appeared.
             let _ = sender.send(SuggestionResult {
                 generation,
                 buffer,
-                suggestions,
+                suggestions: raw_suggestions,
             });
         }
     });
+}
+
+/// A daemon older than this build sends no `risk` field, and a safety warning must not
+/// depend on which build answered the request, so the client re-derives it with the same
+/// rule the engine uses. Never downgrades a marker the daemon already set.
+fn mark_destructive_without_daemon_support(suggestion: &mut SuggestionItem) {
+    if suggestion.risk != "destructive"
+        && matches!(
+            hintshell_core::engine::matcher::risk_for_command(&suggestion.command),
+            Risk::Destructive
+        )
+    {
+        suggestion.risk = "destructive".to_string();
+    }
 }
 
 fn handle_paste(
@@ -906,7 +1007,7 @@ fn handle_key(
 ) -> Result<(), String> {
     match key.code {
         KeyCode::Tab => match tab_action(&state.buffer, state.current()) {
-            TabAction::AcceptHintShell => {
+            TabAction::AcceptHintShell if state.tracking_valid => {
                 let command = state.current().map(|suggestion| suggestion.command.clone());
                 if let Some(command) = command {
                     clear_overlay(state, output)?;
@@ -923,12 +1024,21 @@ fn handle_key(
                     state.generation = state.generation.wrapping_add(1);
                 }
             }
-            TabAction::ForwardToBash => {
+            // Without a trustworthy copy of the line, Ctrl-U would throw away what the
+            // user has already typed, so completion is left to Bash.
+            _ => {
                 clear_overlay(state, output)?;
                 state.clear();
                 write_to_shell(writer, b"\t")?;
             }
         },
+        // Alt+Up/Down: Bash history, keeping Up/Down free for the panel.
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            forward_and_invalidate(state, writer, output, b"\x10")?
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            forward_and_invalidate(state, writer, output, b"\x0e")?
+        }
         KeyCode::Up if !state.suggestions.is_empty() => {
             state.selected = state.selected.saturating_sub(1);
             render_overlay(state, output)?;
@@ -942,6 +1052,9 @@ fn handle_key(
         KeyCode::Esc if !state.suggestions.is_empty() => {
             clear_overlay(state, output)?;
             state.clear();
+            // "Not now" has to stick for this line; otherwise the next keystroke
+            // re-queries and the panel the user just dismissed reappears.
+            state.dismissed = true;
         }
         KeyCode::Esc => forward_and_invalidate(state, writer, output, b"\x1b")?,
         KeyCode::Backspace => {
@@ -963,11 +1076,17 @@ fn handle_key(
             clear_overlay(state, output)?;
             state.clear();
             state.tracking_valid = true;
+            state.dismissed = false;
             write_to_shell(writer, b"\r")?;
             state.buffer.clear();
             state.generation = state.generation.wrapping_add(1);
         }
-        KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // Ctrl+Space: bring the panel back after an Esc, without typing another character.
+        KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.dismissed = false;
+            request_suggestions(state, query_tx, output);
+        }
+        KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
             if state.tracking_valid {
                 state.buffer.push(character);
             }
@@ -993,9 +1112,31 @@ fn handle_key(
             state.generation = state.generation.wrapping_add(1);
             write_to_shell(writer, b"\x1a")?;
         }
-        // Right Arrow or End: accept ghost text / full suggestion if at end of buffer
-        KeyCode::Right | KeyCode::End if !state.suggestions.is_empty() && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::CONTROL) => {
-            if let Some(cmd) = state.current().map(|s| s.command.clone()) {
+        // Every other readline control chord (Ctrl+R search, Ctrl+D exit, Ctrl+L clear,
+        // Ctrl+W kill word, Ctrl+A/E line ends, Ctrl+P/N history) must reach Bash: they
+        // all change the line, so the shadowed buffer is dropped.
+        KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(sequence) = control_sequence(&key) {
+                forward_and_invalidate(state, writer, output, &sequence)?;
+            }
+        }
+        // Meta bindings (Alt+F, Alt+B, Alt+D …) are ESC-prefixed sequences; sending the
+        // bare character would insert stray text instead of moving the cursor.
+        KeyCode::Char(character) if key.modifiers.contains(KeyModifiers::ALT) => {
+            let mut sequence = vec![0x1b];
+            sequence.extend_from_slice(character.encode_utf8(&mut [0_u8; 4]).as_bytes());
+            forward_and_invalidate(state, writer, output, &sequence)?;
+        }
+        KeyCode::BackTab => forward_and_invalidate(state, writer, output, b"\x1b[Z")?,
+        // Right Arrow or End: accept ghost text / full suggestion if at end of buffer. A
+        // destructive command is not offered through this silent one-keypress path; it needs
+        // the visible Tab affordance instead.
+        KeyCode::Right | KeyCode::End if !state.suggestions.is_empty() && key.modifiers.is_empty() => {
+            let accepted = state
+                .current()
+                .filter(|suggestion| suggestion.risk != "destructive")
+                .map(|suggestion| suggestion.command.clone());
+            if let Some(cmd) = accepted {
                 let clean_cmd = cmd.trim_end_matches(['\r', '\n']).replace(['\r', '\n'], " ");
                 if clean_cmd.to_ascii_lowercase().starts_with(&state.buffer.to_ascii_lowercase()) && clean_cmd.len() > state.buffer.len() {
                     clear_overlay(state, output)?;
@@ -1040,10 +1181,11 @@ fn handle_key(
             }
             forward_and_invalidate(state, writer, output, b"\x1b[1;5C")?;
         }
-        KeyCode::Left => forward_and_invalidate(state, writer, output, b"\x1b[D")?,
-        KeyCode::Right => forward_and_invalidate(state, writer, output, b"\x1b[C")?,
-        KeyCode::Home => forward_and_invalidate(state, writer, output, b"\x01")?,
-        KeyCode::End => forward_and_invalidate(state, writer, output, b"\x05")?,
+        // Cursor keys keep their modifiers: Ctrl+Left is a word motion, not a plain `←`,
+        // and dropping the modifier silently changes what Bash does with the keypress.
+        KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => {
+            forward_and_invalidate(state, writer, output, &cursor_sequence(&key))?
+        }
         KeyCode::Delete => {
             if !state.tracking_valid {
                 forward_and_invalidate(state, writer, output, b"\x1b[3~")?;
@@ -1056,7 +1198,14 @@ fn handle_key(
                 state.generation = state.generation.wrapping_add(1);
             }
         }
-        _ => {}
+        // Nothing else may simply vanish. A wrapper that swallows PageUp steals the most
+        // pressed key in a terminal, so unhandled keys are forwarded as their standard
+        // escape sequences and only truly unencodable ones are dropped.
+        _ => {
+            if let Some(sequence) = passthrough_sequence(&key) {
+                forward_and_invalidate(state, writer, output, &sequence)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1117,13 +1266,19 @@ fn write_to_shell(writer: &Arc<Mutex<Box<dyn Write + Send>>>, bytes: &[u8]) -> R
 fn request_suggestions(state: &mut OverlayState, sender: &mpsc::Sender<(u64, String)>, output: &Arc<Mutex<io::Stdout>>) {
     state.generation = state.generation.wrapping_add(1);
     state.clear();
-    if !state.tracking_valid || !is_suggestable(&state.buffer) {
-        if state.rendered_lines > 0 {
+    if !should_query(state) {
+        if state.rendered_lines > 0 || state.ghost_cols > 0 {
             let _ = clear_overlay(state, output);
         }
         return;
     }
     let _ = sender.send((state.generation, state.buffer.clone()));
+}
+
+/// Whether the current line state is worth querying at all: after Esc the panel must stay
+/// away, and an untracked or non-command buffer would only suggest the wrong thing.
+fn should_query(state: &OverlayState) -> bool {
+    !state.dismissed && state.tracking_valid && is_suggestable(&state.buffer)
 }
 
 fn is_suggestable(buffer: &str) -> bool {
@@ -1164,8 +1319,103 @@ fn looks_like_path(token: &str) -> bool {
         || token.contains(':')
 }
 
+/// Readline control chords that HintShell does not consume itself must reach Bash as their
+/// raw bytes; dropping them silently disabled Ctrl+R, Ctrl+D, Ctrl+L, Ctrl+W and friends.
+fn control_sequence(key: &KeyEvent) -> Option<Vec<u8>> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    let character = match key.code {
+        KeyCode::Char(character) => character,
+        _ => return None,
+    };
+    let byte = match character {
+        ' ' | '@' => 0x00,
+        '[' => 0x1b,
+        '\\' => 0x1c,
+        ']' => 0x1d,
+        '^' => 0x1e,
+        '_' | '-' => 0x1f,
+        other => {
+            let lowered = other.to_ascii_lowercase();
+            if lowered.is_ascii_alphabetic() {
+                (lowered as u8) - 0x60
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(vec![byte])
+}
+
+/// Escape sequence a terminal would have sent for a cursor key, modifiers included. Without
+/// a modifier Bash's own readline bindings are used (`\x01`/`\x05`), which is what a plain
+/// Home/End must keep doing for the live wrapper to be invisible.
+fn cursor_sequence(key: &KeyEvent) -> Vec<u8> {
+    let modifier_mask = 1
+        + key.modifiers.contains(KeyModifiers::SHIFT) as u8
+        + key.modifiers.contains(KeyModifiers::ALT) as u8 * 2
+        + key.modifiers.contains(KeyModifiers::CONTROL) as u8 * 4;
+    if modifier_mask == 1 {
+        return match key.code {
+            KeyCode::Left => b"\x1b[D".to_vec(),
+            KeyCode::Right => b"\x1b[C".to_vec(),
+            KeyCode::Home => vec![0x01],
+            KeyCode::End => vec![0x05],
+            _ => Vec::new(),
+        };
+    }
+    let final_byte = match key.code {
+        KeyCode::Left => b'D',
+        KeyCode::Right => b'C',
+        KeyCode::Home => b'H',
+        KeyCode::End => b'F',
+        _ => return Vec::new(),
+    };
+    vec![0x1b, b'[', b'1', b';', b'0' + modifier_mask, final_byte]
+}
+
+/// Escape sequence for a key the overlay does not consume, or `None` when there is no
+/// standard encoding to send.
+fn passthrough_sequence(key: &KeyEvent) -> Option<Vec<u8>> {
+    let ss3 = match key.code {
+        KeyCode::F(1) => Some(b'P'),
+        KeyCode::F(2) => Some(b'Q'),
+        KeyCode::F(3) => Some(b'R'),
+        KeyCode::F(4) => Some(b'S'),
+        _ => None,
+    };
+    if let Some(letter) = ss3 {
+        return Some(vec![0x1b, b'O', letter]);
+    }
+    let number = match key.code {
+        KeyCode::Insert => 2,
+        KeyCode::PageUp => 5,
+        KeyCode::PageDown => 6,
+        KeyCode::F(5) => 15,
+        KeyCode::F(6) => 17,
+        KeyCode::F(7) => 18,
+        KeyCode::F(8) => 19,
+        KeyCode::F(9) => 20,
+        KeyCode::F(10) => 21,
+        KeyCode::F(11) => 23,
+        KeyCode::F(12) => 24,
+        _ => return None,
+    };
+    let modifier = 1
+        + key.modifiers.contains(KeyModifiers::SHIFT) as u8
+        + key.modifiers.contains(KeyModifiers::ALT) as u8 * 2
+        + key.modifiers.contains(KeyModifiers::CONTROL) as u8 * 4;
+    let sequence = if modifier == 1 {
+        format!("\x1b[{number}~")
+    } else {
+        format!("\x1b[{number};{modifier}~")
+    };
+    Some(sequence.into_bytes())
+}
+
 fn clear_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> Result<(), String> {
-    if state.rendered_lines == 0 {
+    if state.rendered_lines == 0 && state.ghost_cols == 0 {
         return Ok(());
     }
 
@@ -1178,21 +1428,28 @@ fn clear_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> R
     for _ in 0..state.rendered_lines {
         frame.push_str("\x1b[1B\r\x1b[2K");
     }
+    // Ghost text lives on the prompt line to the right of the cursor; erase-to-EOL only
+    // touches it because ghost drawing requires an end-of-line cursor (tracking valid).
+    let restore_ghost = state.ghost_cols > 0;
+    state.rendered_lines = 0;
+    state.ghost_cols = 0;
     stdout
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.flush())
         .map_err(|error| format!("cannot clear HintShell overlay: {error}"))?;
 
     let _ = execute!(stdout, crossterm::cursor::MoveTo(cur_col, cur_row));
+    if restore_ghost {
+        let _ = stdout.write_all(b"\x1b[K");
+    }
     let _ = stdout.flush();
 
-    state.rendered_lines = 0;
     Ok(())
 }
 
 fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> Result<(), String> {
     if state.suggestions.is_empty() {
-        if state.rendered_lines > 0 {
+        if state.rendered_lines > 0 || state.ghost_cols > 0 {
             clear_overlay(state, output)?;
         }
         return Ok(());
@@ -1204,18 +1461,32 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let border_color_ansi = config.border_ansi_code();
 
     let (terminal_width, terminal_height) = size().unwrap_or((100, 30));
-    let width = usize::from(terminal_width).clamp(44, 78);
-    let inner_width = overlay_inner_width(width);
-    let command_width = overlay_command_width(width);
+    let width = overlay_width(terminal_width);
     let total = state.suggestions.len();
     let (cur_col, cur_row) = position().unwrap_or((0, 0));
-    let shown = visible_suggestion_rows(cur_row, terminal_height, total, config.max_visible);
+    // A frame wider than the terminal wraps, which desynchronises every row we track, so
+    // very narrow panes fall back to ghost text instead of drawing a broken box.
+    let box_fits = usize::from(terminal_width) > width;
+    let shown = if box_fits {
+        visible_suggestion_rows(cur_row, terminal_height, total, config.max_visible)
+    } else {
+        0
+    };
     if shown == 0 {
         if state.rendered_lines > 0 {
             clear_overlay(state, output)?;
         }
+        // No vertical room: keep suggestions reachable instead of dropping them silently,
+        // which is what the PowerShell surface already does in the same situation.
+        if config.ghost_text {
+            render_ghost(state, output, cur_col, cur_row, terminal_width)?;
+        }
         return Ok(());
     }
+
+    let inner_width = overlay_inner_width(width);
+    let command_width = overlay_command_width(width);
+    let compact = overlay_is_compact(width);
     let old_rendered_lines = state.rendered_lines;
     let rendered_lines = shown + 3;
     let selected = state.selected.min(total.saturating_sub(1));
@@ -1223,6 +1494,7 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     let viewport_end = viewport_start + shown;
     let mut frame = String::new();
     let counter = format!(" {}/{} ", selected + 1, total);
+    let selected_style = selected_row_style(is_apple);
 
     // Rainbow colors array for Gemini style gradient: Blue -> Cyan -> Green -> Yellow -> Orange -> Pink -> Purple
     let rainbow_colors = [
@@ -1277,12 +1549,38 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     {
         let suggestion_index = viewport_start + index;
         let selected_row = suggestion_index == selected;
+        let destructive = suggestion.risk == "destructive";
         let command = fit_width(&suggestion.command, command_width);
-        let source_clean = fit_width(&suggestion.source, 20);
-        let source_pad = 20usize.saturating_sub(source_clean.chars().count());
-        let source_formatted = format!("{}{}", source_clean, " ".repeat(source_pad));
         let marker = if selected_row { "▶" } else { " " };
-        let highlighted_command = highlight_match(&command, &state.buffer, selected_row, command_width);
+        let highlighted_command = highlight_match(
+            &command,
+            &state.buffer,
+            if selected_row { &selected_style } else { "" },
+            command_width,
+            destructive,
+        );
+
+        // Full layout explains where the item came from and how it matched; compact layout
+        // spends those columns on the command itself.
+        let info_field = if compact {
+            String::new()
+        } else {
+            let mut info = hintshell_core::engine::matcher::source_label(&suggestion.source).to_string();
+            let tag = hintshell_core::engine::matcher::tier_tag(suggestion.tier);
+            if !tag.is_empty() {
+                info.push(' ');
+                info.push_str(tag);
+            }
+            let frequency = hintshell_core::engine::matcher::frequency_label(suggestion.frequency);
+            if !frequency.is_empty() {
+                info.push(' ');
+                info.push_str(&frequency);
+            }
+            if destructive {
+                info = format!("! {info}");
+            }
+            pad_to_width(&fit_width(&info, INFO_FIELD_WIDTH), INFO_FIELD_WIDTH)
+        };
 
         let (row_border_left, row_border_right) = if is_apple {
             let left_step = total_perimeter.saturating_sub(1 + index);
@@ -1300,28 +1598,50 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
             (border_color_ansi.to_string(), border_color_ansi.to_string())
         };
 
+        let content = if compact {
+            format!(" {marker} {highlighted_command} ")
+        } else {
+            format!(" {marker} {highlighted_command}  {info_field} ")
+        };
+
         if selected_row {
-            let selected_bg = if is_apple {
-                "\x1b[48;2;54;87;112m\x1b[38;2;255;255;255m\x1b[1m" // Apple Intelligence frosted Siri-blue selection
-            } else {
-                "\x1b[48;5;60m\x1b[38;5;255m"
-            };
             frame.push_str(&format!(
-                "\x1b[1B\r\x1b[2K{row_border_left}│{selected_bg} {marker} {highlighted_command}  {source_formatted} \x1b[0m{row_border_right}│\x1b[0m"
+                "\x1b[1B\r\x1b[2K{row_border_left}│{selected_style}{content}\x1b[0m{row_border_right}│\x1b[0m"
             ));
         } else {
             frame.push_str(&format!(
-                "\x1b[1B\r\x1b[2K{row_border_left}│\x1b[0m {marker} {highlighted_command}  {source_formatted} {row_border_right}│\x1b[0m"
+                "\x1b[1B\r\x1b[2K{row_border_left}│\x1b[0m{content}{row_border_right}│\x1b[0m"
             ));
         }
     }
 
-    let description = state
-        .suggestions
-        .get(selected)
-        .and_then(|suggestion| suggestion.description.as_deref())
-        .unwrap_or("history suggestion");
-    let description = fit_width(description, inner_width.saturating_sub(2));
+    let selected_item = &state.suggestions[selected];
+    let destructive = selected_item.risk == "destructive";
+    let description = match selected_item.description.as_deref() {
+        Some(text) if !text.trim().is_empty() => text.to_string(),
+        // "no description" teaches nothing; usage count and provenance do, and the engine
+        // already carries both for history entries.
+        _ if selected_item.frequency > 0 => format!(
+            "used {}x · {}",
+            selected_item.frequency,
+            hintshell_core::engine::matcher::source_label(&selected_item.source)
+        ),
+        _ => hintshell_core::engine::matcher::NO_DESCRIPTION.to_string(),
+    };
+    let description = if destructive {
+        format!("[!] risky · {description}")
+    } else {
+        description
+    };
+    let hint = if compact {
+        ""
+    } else {
+        "Tab/→ accept · Alt+→ word"
+    };
+    let hint_gap = if hint.is_empty() { 0 } else { 2 };
+    let description_budget =
+        inner_width.saturating_sub(2 + hint_gap + display_width(hint));
+    let description = fit_width(&description, description_budget);
     let (desc_border_left, desc_border_right) = if is_apple {
         let left_step = total_perimeter.saturating_sub(1 + shown);
         let right_step = perimeter_top + 1 + shown;
@@ -1334,10 +1654,12 @@ fn render_overlay(state: &mut OverlayState, output: &Arc<Mutex<io::Stdout>>) -> 
     } else {
         (border_color_ansi.to_string(), border_color_ansi.to_string())
     };
-    let desc_pad = inner_width.saturating_sub(description.chars().count() + 2);
+    let used = 2 + display_width(&description) + hint_gap + display_width(hint);
+    let desc_pad = inner_width.saturating_sub(used);
     frame.push_str(&format!(
-        "\x1b[1B\r\x1b[2K{desc_border_left}│\x1b[38;5;244m  {description}{}{desc_border_right}│\x1b[0m",
-        " ".repeat(desc_pad)
+        "\x1b[1B\r\x1b[2K{desc_border_left}│\x1b[38;5;244m  {description}{}{}{hint}\x1b[0m{desc_border_right}│\x1b[0m",
+        " ".repeat(desc_pad),
+        " ".repeat(hint_gap)
     ));
 
     if is_apple {
@@ -1424,36 +1746,106 @@ fn apple_perimeter_color(step: usize, total_steps: usize) -> (u8, u8, u8) {
 }
 
 fn rgb_ansi(rgb: (u8, u8, u8)) -> String {
-    format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+    if crate::config::supports_truecolor() {
+        format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+    } else {
+        format!("\x1b[38;5;{}m", truecolor_to_256(rgb))
+    }
 }
 
-fn highlight_match(command: &str, buffer: &str, is_selected: bool, target_width: usize) -> String {
+fn rgb_bg_ansi(rgb: (u8, u8, u8)) -> String {
+    if crate::config::supports_truecolor() {
+        format!("\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+    } else {
+        format!("\x1b[48;5;{}m", truecolor_to_256(rgb))
+    }
+}
+
+/// Nearest colour in the 6x6x6 cube, so gradient themes stay recognisable instead of
+/// turning into escape-sequence noise on Conhost or `TERM=xterm-256color`.
+fn truecolor_to_256((red, green, blue): (u8, u8, u8)) -> u8 {
+    let quantize = |value: u8| (usize::from(value) * 5 / 255).min(5);
+    (16 + 36 * quantize(red) + 6 * quantize(green) + quantize(blue)) as u8
+}
+
+/// Frosted Siri-blue for the Apple presets, muted indigo elsewhere.
+const APPLE_SELECTION_RGB: (u8, u8, u8) = (54, 87, 112);
+
+fn selected_row_style(is_apple: bool) -> String {
+    if is_apple {
+        format!(
+            "{}\x1b[38;2;255;255;255m\x1b[1m",
+            rgb_bg_ansi(APPLE_SELECTION_RGB)
+        )
+    } else {
+        "\x1b[48;5;60m\x1b[38;5;255m".to_string()
+    }
+}
+
+fn highlight_match(
+    command: &str,
+    buffer: &str,
+    selected_style: &str,
+    target_width: usize,
+    destructive: bool,
+) -> String {
     let clean_cmd = command.replace(['\r', '\n', '\t'], " ");
     let buf_lower = buffer.trim().to_ascii_lowercase();
     let cmd_lower = clean_cmd.to_ascii_lowercase();
     if buf_lower.is_empty() {
-        return format!("{:<width$}", clean_cmd, width = target_width);
+        return pad_to_width(&clean_cmd, target_width);
     }
 
     if let Some(pos) = cmd_lower.find(&buf_lower) {
         let match_len = buf_lower.len();
+        if !clean_cmd.is_char_boundary(pos) || !clean_cmd.is_char_boundary(pos + match_len) {
+            return pad_to_width(&clean_cmd, target_width);
+        }
         let before = &clean_cmd[..pos];
         let matched = &clean_cmd[pos..pos + match_len];
         let after = &clean_cmd[pos + match_len..];
 
-        let reset = if is_selected {
-            "\x1b[48;2;54;87;112m\x1b[38;2;255;255;255m\x1b[1m"
+        // The tail has to go back to the row's own style, otherwise the selected row shows
+        // a colour seam right after the typed prefix.
+        let reset = if selected_style.is_empty() { "\x1b[0m" } else { selected_style };
+        // Yellow marks the part the user typed; red marks a command that can delete work.
+        // Unselected rows sit on the user's own background, so they are also underlined:
+        // a bare yellow would vanish on light themes and colour would be the only cue.
+        let highlight_code = if destructive {
+            if selected_style.is_empty() {
+                "\x1b[1;4;38;5;203m"
+            } else {
+                "\x1b[1;38;5;203m"
+            }
+        } else if selected_style.is_empty() {
+            "\x1b[1;4;38;5;220m"
         } else {
-            "\x1b[0m"
+            "\x1b[1;38;5;220m"
         };
-        // Yellow bold highlight
-        let highlight_code = "\x1b[1;38;5;220m";
         let display_str = format!("{before}{highlight_code}{matched}{reset}{after}");
-        let pad_len = target_width.saturating_sub(clean_cmd.chars().count());
+        let pad_len = target_width.saturating_sub(display_width(&clean_cmd));
         format!("{}{}", display_str, " ".repeat(pad_len))
     } else {
-        format!("{:<width$}", clean_cmd, width = target_width)
+        pad_to_width(&clean_cmd, target_width)
     }
+}
+
+/// Below this frame width the info column costs more than it tells, so it is dropped and
+/// the columns go to the command itself.
+const COMPACT_OVERLAY_WIDTH: usize = 64;
+/// Width of the "here ~ 12x" explanation column in the full layout.
+const INFO_FIELD_WIDTH: usize = 20;
+
+fn overlay_width(terminal_width: u16) -> usize {
+    // Never wider than the terminal: a frame that wraps makes the row bookkeeping wrong and
+    // leaves residue behind, which is the bug class already fixed in the PowerShell overlay.
+    usize::from(terminal_width)
+        .saturating_sub(1)
+        .clamp(24, 78)
+}
+
+fn overlay_is_compact(width: usize) -> bool {
+    width < COMPACT_OVERLAY_WIDTH
 }
 
 fn overlay_inner_width(width: usize) -> usize {
@@ -1461,7 +1853,14 @@ fn overlay_inner_width(width: usize) -> usize {
 }
 
 fn overlay_command_width(width: usize) -> usize {
-    overlay_inner_width(width).saturating_sub(26)
+    let inner = overlay_inner_width(width);
+    if overlay_is_compact(width) {
+        // " ▶ " + command + one trailing space.
+        inner.saturating_sub(4)
+    } else {
+        // " ▶ " + command + two spaces + info column + one trailing space.
+        inner.saturating_sub(6 + INFO_FIELD_WIDTH)
+    }
 }
 
 fn visible_suggestion_rows(cursor_row: u16, terminal_height: u16, total: usize, max_visible: usize) -> usize {
@@ -1481,17 +1880,135 @@ fn viewport_start(selected: usize, total: usize, viewport_size: usize) -> usize 
         .min(total - viewport_size)
 }
 
+/// Terminal columns a character occupies: combining marks 0, East Asian wide/fullwidth and
+/// emoji 2, everything else 1. Counting `chars()` instead misaligns the frame border.
+fn character_width(character: char) -> usize {
+    if character.is_ascii() {
+        return if character.is_control() { 0 } else { 1 };
+    }
+    let code = character as u32;
+    if (0x0300..=0x036F).contains(&code) {
+        return 0;
+    }
+    const WIDE: &[(u32, u32)] = &[
+        (0x1100, 0x115F),
+        (0x2E80, 0x303E),
+        (0x3041, 0x33FF),
+        (0x3400, 0x4DBF),
+        (0x4E00, 0x9FFF),
+        (0xA000, 0xA4CF),
+        (0xAC00, 0xD7A3),
+        (0xF900, 0xFAFF),
+        (0xFE10, 0xFE19),
+        (0xFE30, 0xFE6F),
+        (0xFF00, 0xFF60),
+        (0xFFE0, 0xFFE6),
+        (0x1F300, 0x1FAFF),
+        (0x20000, 0x3FFFD),
+    ];
+    if WIDE
+        .iter()
+        .any(|&(start, end)| (start..=end).contains(&code))
+    {
+        return 2;
+    }
+    1
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().map(character_width).sum()
+}
+
+fn pad_to_width(text: &str, columns: usize) -> String {
+    format!("{}{}", text, " ".repeat(columns.saturating_sub(display_width(text))))
+}
+
 fn fit_width(text: &str, max_width: usize) -> String {
     let sanitized = text.replace(['\r', '\n', '\t'], " ");
+    if max_width == 0 {
+        return String::new();
+    }
     let mut result = String::new();
+    let mut used = 0usize;
     for character in sanitized.chars() {
-        if result.chars().count() >= max_width.saturating_sub(1) {
+        let width = character_width(character);
+        if used + width > max_width.saturating_sub(1) {
             result.push('…');
             return result;
         }
+        used += width;
         result.push(character);
     }
     result
+}
+
+/// The dimmed tail that would be inserted by accepting the selected suggestion.
+fn ghost_suffix(command: &str, buffer: &str) -> Option<String> {
+    let command = command
+        .trim_end_matches(['\r', '\n'])
+        .replace(['\r', '\n'], " ");
+    if buffer.is_empty() || command.len() <= buffer.len() {
+        return None;
+    }
+    if !command
+        .to_ascii_lowercase()
+        .starts_with(&buffer.to_ascii_lowercase())
+    {
+        return None;
+    }
+    if !command.is_char_boundary(buffer.len()) {
+        return None;
+    }
+    let suffix = &command[buffer.len()..];
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix.to_string())
+    }
+}
+
+/// Inline preview used when there is no room for the box. Destructive commands are excluded:
+/// an unlabelled one-keypress acceptance path is not an appropriate affordance for them.
+fn render_ghost(
+    state: &mut OverlayState,
+    output: &Arc<Mutex<io::Stdout>>,
+    cur_col: u16,
+    cur_row: u16,
+    terminal_width: u16,
+) -> Result<(), String> {
+    let suggestion = match state.current() {
+        Some(suggestion) => suggestion.clone(),
+        None => return Ok(()),
+    };
+    state.ghost_cols = 0;
+    if !state.tracking_valid || suggestion.risk == "destructive" || state.dismissed {
+        return Ok(());
+    }
+    let Some(suffix) = ghost_suffix(&suggestion.command, &state.buffer) else {
+        return Ok(());
+    };
+    let budget = usize::from(terminal_width)
+        .saturating_sub(usize::from(cur_col).saturating_add(2));
+    let suffix = fit_width(&suffix, budget);
+    let columns = display_width(&suffix);
+    if columns == 0 {
+        return Ok(());
+    }
+
+    let mut stdout = output
+        .lock()
+        .map_err(|_| "terminal output is unavailable".to_string())?;
+    let _ = execute!(stdout, crossterm::cursor::MoveTo(cur_col, cur_row));
+    stdout
+        .write_all(format!("\x1b[38;5;244m{suffix}\x1b[0m").as_bytes())
+        .and_then(|_| {
+            let _ = execute!(stdout, crossterm::cursor::MoveTo(cur_col, cur_row));
+            stdout.flush()
+        })
+        .map_err(|error| format!("cannot render HintShell ghost text: {error}"))?;
+
+    state.ghost_cols = columns;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1505,6 +2022,15 @@ mod tests {
             score: 1.0,
             frequency: 1,
             source: "history".to_string(),
+            tier: 0,
+            risk: "normal".to_string(),
+        }
+    }
+
+    fn risky(command: &str) -> SuggestionItem {
+        SuggestionItem {
+            risk: "destructive".to_string(),
+            ..suggestion(command)
         }
     }
 
@@ -1607,6 +2133,38 @@ mod tests {
     }
 
     #[test]
+    fn continuation_marker_suppresses_suggestions_without_rendering() {
+        let (events, received) = mpsc::channel();
+        let mut pending = Vec::new();
+        let bytes = filter_continuation_markers(
+            b"> \x1eHINTSHELL_CONTINUATION\x1fmore input",
+            &mut pending,
+            &events,
+        );
+
+        assert_eq!(bytes, b"> more input");
+        assert!(matches!(
+            received.try_recv(),
+            Ok(ShellEvent::Continuation)
+        ));
+    }
+
+    #[test]
+    fn continuation_marker_can_span_output_reads() {
+        let (events, received) = mpsc::channel();
+        let mut pending = Vec::new();
+        let first = filter_continuation_markers(b"\x1eHINTSHELL_CONTINU", &mut pending, &events);
+        let second = filter_continuation_markers(b"ATION\x1f", &mut pending, &events);
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert!(matches!(
+            received.try_recv(),
+            Ok(ShellEvent::Continuation)
+        ));
+    }
+
+    #[test]
     fn ignores_key_release_events() {
         let key = KeyEvent::new_with_kind(
             KeyCode::Char('g'),
@@ -1691,20 +2249,377 @@ mod tests {
         let width = 44;
         let inner_width = overlay_inner_width(width);
         let command_width = overlay_command_width(width);
-        let row = format!(" ▶ {:<command_width$}  {:<20} ", "git status", "history");
+        let row = format!(" ▶ {:<command_width$} ", "git status");
         let description = format!(
             "  {:<desc_width$}",
-            "history suggestion",
+            "no description",
             desc_width = inner_width - 2
         );
 
         assert_eq!(inner_width, 42);
-        assert_eq!(row.chars().count(), inner_width);
-        assert_eq!(description.chars().count(), inner_width);
+        assert_eq!(display_width(&row), inner_width);
+        assert_eq!(display_width(&description), inner_width);
     }
 
     #[test]
     fn truncation_keeps_a_visible_ellipsis() {
         assert_eq!(fit_width("abcdefgh", 5), "abcd…");
+        assert_eq!(fit_width("abc", 0), "");
+    }
+
+    #[test]
+    fn defers_destructive_suggestions_to_explicit_acceptance() {
+        // Tab keeps working, but the invisible right-arrow path must not accept damage.
+        assert_eq!(
+            tab_action("rm", Some(&risky("rm -rf build"))),
+            TabAction::AcceptHintShell
+        );
+        assert_eq!(risky("rm -rf build").risk, "destructive");
+    }
+
+    #[test]
+    fn an_older_daemon_still_gets_the_safety_marker() {
+        // The installed daemon may predate the risk field; the panel must not then offer a
+        // silent arrow-accept of an unrecoverable command.
+        let mut legacy = suggestion("rm -rf build");
+        mark_destructive_without_daemon_support(&mut legacy);
+        assert_eq!(legacy.risk, "destructive");
+
+        let mut safe = suggestion("git status");
+        mark_destructive_without_daemon_support(&mut safe);
+        assert_eq!(safe.risk, "normal", "ordinary commands must stay unmarked");
+
+        let mut marked = suggestion("git status");
+        marked.risk = "destructive".to_string();
+        mark_destructive_without_daemon_support(&mut marked);
+        assert_eq!(marked.risk, "destructive", "a daemon marker is never removed");
+    }
+
+    #[test]
+    fn overlay_layout_fills_exactly_the_inner_width_in_both_modes() {
+        // Full layout (>= 64): command plus the explanation column.
+        let full = 78;
+        let inner = overlay_inner_width(full);
+        let command_width = overlay_command_width(full);
+        assert!(!overlay_is_compact(full));
+        assert_eq!(inner, 76);
+        let row = format!(
+            " ▶ {:<cw$}  {:<INFO_FIELD_WIDTH$} ",
+            "git status",
+            "here 12x",
+            cw = command_width
+        );
+        assert_eq!(display_width(&row), inner);
+
+        // Compact layout (< 64): the column is dropped and the command gets the space.
+        let narrow = 44;
+        let narrow_inner = overlay_inner_width(narrow);
+        let narrow_command_width = overlay_command_width(narrow);
+        assert!(overlay_is_compact(narrow));
+        assert!(
+            narrow_command_width > 30,
+            "command must not be cut to a stub in a 44-column pane"
+        );
+        let narrow_row = format!(" ▶ {:<cw$} ", "git status", cw = narrow_command_width);
+        assert_eq!(display_width(&narrow_row), narrow_inner);
+    }
+
+    #[test]
+    fn frame_never_exceeds_the_terminal_width() {
+        // A 30-column pane used to be handed a 44-column frame, which wrapped and left
+        // residue on every following row.
+        assert_eq!(overlay_width(30), 29);
+        assert_eq!(overlay_width(120), 78);
+        assert_eq!(overlay_width(8), 24, "floor for absurdly small panes");
+        assert!(overlay_width(30) < 30, "box must fit inside the terminal");
+    }
+
+    #[test]
+    fn display_width_counts_wide_and_combining_characters() {
+        assert_eq!(display_width("git status"), 10);
+        assert_eq!(display_width("目录"), 4);
+        assert_eq!(display_width("…▶"), 2);
+        assert_eq!(fit_width("目录目录目录", 5), "目录…");
+    }
+
+    #[test]
+    fn control_chords_reach_bash_as_readline_bytes() {
+        let key = |code: KeyCode, modifiers: KeyModifiers| KeyEvent::new(code, modifiers);
+        assert_eq!(
+            control_sequence(&key(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(vec![0x12])
+        );
+        assert_eq!(
+            control_sequence(&key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Some(vec![0x04])
+        );
+        assert_eq!(
+            control_sequence(&key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Some(vec![0x0c])
+        );
+        assert_eq!(
+            control_sequence(&key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            Some(vec![0x17])
+        );
+        assert_eq!(
+            control_sequence(&key(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            Some(vec![0x12])
+        );
+        assert_eq!(control_sequence(&key(KeyCode::Char('r'), KeyModifiers::NONE)), None);
+    }
+
+    #[test]
+    fn ghost_text_only_extends_a_real_prefix() {
+        assert_eq!(
+            ghost_suffix("git checkout main", "git ").as_deref(),
+            Some("checkout main")
+        );
+        assert_eq!(
+            ghost_suffix("git checkout main", "GIT ").as_deref(),
+            Some("checkout main")
+        );
+        assert_eq!(ghost_suffix("git status", "git status"), None);
+        assert_eq!(ghost_suffix("rm -rf build", "ru"), None);
+    }
+
+    #[test]
+    fn dismissed_overlay_stays_hidden_while_editing_the_same_line() {
+        let mut state = OverlayState::new();
+        state.buffer = "git".to_string();
+        state.tracking_valid = true;
+        state.suggestions = vec![suggestion("git status")];
+        assert!(should_query(&state), "a typed command prefix is worth querying");
+
+        // The Esc path: "not now" has to survive the next keystroke on the same line.
+        state.dismissed = true;
+        assert!(!should_query(&state), "typing must not re-open a dismissed panel");
+
+        state.dismissed = false;
+        state.buffer = "git status -".to_string();
+        assert!(!should_query(&state), "a flag position is Bash's own completion");
+
+        state.buffer = "cd src/".to_string();
+        assert!(!should_query(&state), "a path position is Bash's own completion");
+
+        state.buffer = String::new();
+        assert!(!should_query(&state), "an empty buffer has nothing to match");
+
+        state.buffer = "git".to_string();
+        state.tracking_valid = false;
+        assert!(!should_query(&state), "an untracked line must not be guessed");
+    }
+
+    /// Run the four marker filters exactly as `start_output_pump` chains them.
+    fn pump_chain(chunks: &[&[u8]]) -> (Vec<u8>, Vec<&'static str>) {
+        let cwd = Arc::new(Mutex::new(None::<String>));
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut continuation = Vec::new();
+        let mut prompt = Vec::new();
+        let mut startup = Vec::new();
+        let mut current_directory = Vec::new();
+        let mut written = Vec::new();
+
+        for chunk in chunks {
+            let bytes = filter_cwd_markers(
+                &filter_startup_phase_markers(
+                    &filter_prompt_markers(
+                        &filter_continuation_markers(chunk, &mut continuation, &events_tx),
+                        &mut prompt,
+                        &events_tx,
+                    ),
+                    &mut startup,
+                    &events_tx,
+                ),
+                &mut current_directory,
+                Some(&cwd),
+            );
+            written.extend_from_slice(&bytes);
+        }
+        // The pump flushes whatever the filters were still holding when the shell closed.
+        for leftover in [continuation, prompt, startup, current_directory] {
+            written.extend_from_slice(&leftover);
+        }
+        drop(events_tx);
+        let mut seen = Vec::new();
+        while let Ok(event) = events_rx.recv() {
+            match event {
+                ShellEvent::PromptReady => seen.push("prompt"),
+                ShellEvent::Continuation => seen.push("continuation"),
+                ShellEvent::StartupPhase(_) => seen.push("startup"),
+                ShellEvent::Output(_) | ShellEvent::Closed => {}
+            }
+        }
+        (written, seen)
+    }
+
+    #[test]
+    fn unhandled_navigation_keys_are_not_swallowed() {
+        let key = |code: KeyCode, modifiers: KeyModifiers| KeyEvent::new(code, modifiers);
+        assert_eq!(
+            passthrough_sequence(&key(KeyCode::PageUp, KeyModifiers::NONE)),
+            Some(b"\x1b[5~".to_vec())
+        );
+        assert_eq!(
+            passthrough_sequence(&key(KeyCode::PageDown, KeyModifiers::NONE)),
+            Some(b"\x1b[6~".to_vec())
+        );
+        assert_eq!(
+            passthrough_sequence(&key(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            passthrough_sequence(&key(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            Some(b"\x1b[5;5~".to_vec())
+        );
+        assert_eq!(passthrough_sequence(&key(KeyCode::Char('g'), KeyModifiers::NONE)), None);
+    }
+
+    #[test]
+    fn cursor_keys_keep_their_modifiers() {
+        let key = |code: KeyCode, modifiers: KeyModifiers| KeyEvent::new(code, modifiers);
+        assert_eq!(cursor_sequence(&key(KeyCode::Left, KeyModifiers::NONE)), b"\x1b[D");
+        assert_eq!(cursor_sequence(&key(KeyCode::Right, KeyModifiers::NONE)), b"\x1b[C");
+        // Plain Home/End stay readline beginning/end of line, as Bash binds them.
+        assert_eq!(cursor_sequence(&key(KeyCode::Home, KeyModifiers::NONE)), vec![0x01]);
+        assert_eq!(cursor_sequence(&key(KeyCode::End, KeyModifiers::NONE)), vec![0x05]);
+        assert_eq!(
+            cursor_sequence(&key(KeyCode::Left, KeyModifiers::CONTROL)),
+            b"\x1b[1;5D"
+        );
+        assert_eq!(
+            cursor_sequence(&key(KeyCode::Right, KeyModifiers::ALT)),
+            b"\x1b[1;3C"
+        );
+        assert_eq!(
+            cursor_sequence(&key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            b"\x1b[1;6C"
+        );
+    }
+
+    #[test]
+    fn marker_text_never_reaches_the_screen_however_the_pty_splits_it() {
+        let prompt_text = "ADMIN@host MINGW64 ~\r\n";
+        let streams: Vec<Vec<u8>> = vec![
+            // Current wire format: markers inside a private OSC sequence.
+            format!(
+                "{prompt_text}\x1b]5522;hintshell_cwd=C:/Users/ADMIN\x07\x1b]5522;hintshell_prompt\x07"
+            )
+            .into_bytes(),
+            // Legacy RS/US shape, still stripped for a shell that started with an older hook.
+            format!("{prompt_text}\x1eHINTSHELL_CWD:C:/Users/ADMIN\x1f\x1eHINTSHELL_PROMPT\x1f")
+                .into_bytes(),
+        ];
+
+        for stream in &streams {
+            for split in 1..=stream.len() {
+                let (left, right) = stream.split_at(split);
+                let chunks: Vec<&[u8]> = if right.is_empty() {
+                    vec![left]
+                } else {
+                    vec![left, right]
+                };
+                let (written, seen) = pump_chain(&chunks);
+                assert_eq!(
+                    String::from_utf8_lossy(&written),
+                    prompt_text,
+                    "leaked marker text when the stream split at byte {split}"
+                );
+                assert!(
+                    seen.contains(&"prompt"),
+                    "the prompt event was lost when splitting at byte {split}: {seen:?}"
+                );
+            }
+
+            let bytes: Vec<&[u8]> = stream.chunks(1).collect();
+            let (written, seen) = pump_chain(&bytes);
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                prompt_text,
+                "byte-by-byte delivery leaked"
+            );
+            assert!(seen.contains(&"prompt"), "prompt event lost byte by byte");
+        }
+    }
+
+    #[test]
+    fn osc_cwd_marker_updates_the_directory_without_printing_path_text() {
+        let cwd = Arc::new(Mutex::new(None::<String>));
+        let mut pending = Vec::new();
+        let written = filter_cwd_markers(
+            b"prompt\x1b]5522;hintshell_cwd=/tmp/workspace\x07next",
+            &mut pending,
+            Some(&cwd),
+        );
+        assert_eq!(String::from_utf8_lossy(&written), "promptnext");
+        assert_eq!(
+            cwd.lock().unwrap().as_deref(),
+            Some("/tmp/workspace"),
+            "the OSC payload never reached the directory"
+        );
+    }
+
+    #[test]
+    fn legacy_control_byte_markers_are_still_stripped() {
+        let cwd = Arc::new(Mutex::new(None::<String>));
+        let mut pending = Vec::new();
+        let written = filter_cwd_markers(
+            b"prompt\x1eHINTSHELL_CWD:/tmp/old\x1fnext",
+            &mut pending,
+            Some(&cwd),
+        );
+        assert_eq!(String::from_utf8_lossy(&written), "promptnext");
+        assert_eq!(cwd.lock().unwrap().as_deref(), Some("/tmp/old"));
+    }
+
+    #[test]
+    fn codepage_remapped_marker_glyphs_from_a_stale_hook_are_neutralised() {
+        // A generated rcfile that predates the OSC protocol still writes the 0x1e/0x1f form,
+        // and ConPTY hands the wrapper those bytes already re-mapped into "\u{25b2}" and
+        // "\u{25bc}" text. Nothing may reach the screen, and the signals must still arrive.
+        let cwd = Arc::new(Mutex::new(None::<String>));
+        let mut pending = Vec::new();
+        let written = filter_cwd_markers(
+            "before\u{25b2}HINTSHELL_CWD:D:/Admin/proj\u{25bc}after".as_bytes(),
+            &mut pending,
+            Some(&cwd),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&written),
+            "beforeafter",
+            "stale-hook marker glyphs reached the screen"
+        );
+        assert_eq!(cwd.lock().unwrap().as_deref(), Some("D:/Admin/proj"));
+
+        let (sender, receiver) = mpsc::channel();
+        let mut pending = Vec::new();
+        let written = filter_prompt_markers(
+            "\u{25b2}HINTSHELL_PROMPT\u{25bc}".as_bytes(),
+            &mut pending,
+            &sender,
+        );
+        assert!(written.is_empty(), "a stale prompt marker was printed");
+        let mut pending = Vec::new();
+        let written = filter_continuation_markers(
+            "\u{25b2}HINTSHELL_CONTINUATION\u{25bc}".as_bytes(),
+            &mut pending,
+            &sender,
+        );
+        assert!(
+            written.is_empty(),
+            "a stale continuation marker was printed"
+        );
+        assert!(matches!(receiver.recv(), Ok(ShellEvent::PromptReady)));
+        assert!(matches!(receiver.recv(), Ok(ShellEvent::Continuation)));
+    }
+
+    #[test]
+    fn continuation_and_prompt_markers_survive_a_split_stream() {
+        let chunks: [&[u8]; 2] = [
+            b"\x1eHINTSHELL_CWD:/tmp\x1f\x1eHINTSHELL_PROMPT\x1fmore\x1eHINTSHELL_CONTINU",
+            b"ATION\x1fend",
+        ];
+        let (written, seen) = pump_chain(&chunks);
+        assert_eq!(String::from_utf8_lossy(&written), "moreend");
+        assert_eq!(seen, vec!["prompt", "continuation"], "{seen:?}");
     }
 }

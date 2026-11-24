@@ -122,13 +122,18 @@ _hintshell_git_branch() {{
 alias cls='clear'
 PS1='\[\e[32m\]\u@\h \[\e[33m\]\w\[\e[36m\]`_hintshell_git_branch`\[\e[0m\]\n$ '
 export PATH="{bin_dir}:$PATH"
-if [[ -n "${{HINTSHELL_LIVE_BASH:-}}" ]]; then
+if [[ -n "${{HINTSHELL_MARKER_TOKEN:-}}" ]]; then unset HINTSHELL_MARKER_TOKEN; _hintshell_markers_owned=1; fi
+if [[ -n "${{_hintshell_markers_owned:-}}" ]]; then
+  # Startup phases travel as markers so the wrapper can log them without polluting the
+  # screen. Markers use a private OSC sequence: Windows ConPTY turns a bare 0x1e byte into
+  # the glyph "▲", which no wrapper can recognise, while escape sequences pass through intact.
   _hintshell_trace_phase() {{
     [[ "${{HINTSHELL_TRACE_STARTUP:-}}" == "1" ]] || return
-    printf '$1'
+    printf '\033]5522;hintshell_phase=%s\007' "$1"
   }}
   _hintshell_trace_phase 'entered live branch'
-  _hintshell_emit_prompt() {{ :; }}
+  _hintshell_emit_prompt() {{ printf '\033]5522;hintshell_cwd=%s\007\033]5522;hintshell_prompt\007' "$PWD"; }}
+  PS2=$'\033]5522;hintshell_continuation\007'"${{PS2-> }}"
   _hintshell_live_record() {{
     ( local last_cmd
       last_cmd=$(HISTTIMEFORMAT="" history 1 | sed 's/^[ ]*[0-9]*[ ]*//')

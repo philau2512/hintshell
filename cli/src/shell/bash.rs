@@ -64,8 +64,21 @@ pub fn hook_script() -> String {
         "}\n".to_string(),
         "[[ \"$PROMPT_COMMAND\" != *_hintshell_preexec* ]] && PROMPT_COMMAND=\"_hintshell_preexec;$PROMPT_COMMAND\"\n"
             .to_string(),
-        "\nif [[ -n \"${HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}\" ]]; then\n".to_string(),
-        "_hintshell_emit_prompt() { :; }\n".to_string(),
+        // Live-overlay protocol markers. The overlay cannot see readline's state, so the
+        // prompt itself carries the working directory (contextual suggestions follow `cd`)
+        // and an end-of-prompt marker, while PS2 carries a continuation marker.
+        //
+        // Markers travel inside a private OSC sequence, never as bare control bytes: Windows
+        // ConPTY re-maps control bytes through the console codepage (0x1e becomes the glyph
+        // "▲"), which no wrapper can recognise, and an OSC the terminal does not know is
+        // silently ignored instead of printed as garbage.
+        //
+        // The wrapper hands this shell a one-shot token and the hook consumes it, so a nested
+        // `bash`, an older wrapper, or a shell whose wrapper died never emit markers at all.
+        "\nif [[ -n \"${HINTSHELL_MARKER_TOKEN:-}\" ]]; then unset HINTSHELL_MARKER_TOKEN; _hintshell_markers_owned=1; fi\n".to_string(),
+        "if [[ -n \"${_hintshell_markers_owned:-}\" ]]; then\n".to_string(),
+        "_hintshell_emit_prompt() { printf '\\033]5522;hintshell_cwd=%s\\007\\033]5522;hintshell_prompt\\007' \"$PWD\"; }\n".to_string(),
+        "PS2=$'\\033]5522;hintshell_continuation\\007'\"${PS2-> }\"\n".to_string(),
         "PROMPT_COMMAND=\"_hintshell_emit_prompt;$PROMPT_COMMAND\"\nfi\n".to_string(),
         "\n# Daemon startup is deferred until a command or non-live Tab query needs it.\n".to_string(),
     ]
@@ -107,9 +120,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_bash_hook_emits_prompt_markers_in_live_bash() {
+    fn live_bash_hook_emits_prompt_and_cwd_markers_on_every_platform() {
         let hook = hook_script();
-        assert!(hook.contains("HINTSHELL_LIVE_BASH:-}\" && -z \"${MSYSTEM:-}"));
+        // Git Bash (MSYSTEM) used to be excluded, so the overlay never learned the directory
+        // and `cd` suggestions stayed on the startup folder.
+        assert!(hook.contains("_hintshell_emit_prompt() { printf '\\033]5522;hintshell_cwd=%s\\007\\033]5522;hintshell_prompt\\007' \"$PWD\"; }"));
+        // Markers must never be bare control bytes: ConPTY renders 0x1e as "▲" and the
+        // wrapper cannot recognise it, which printed marker garbage on users' screens.
+        assert!(!hook.contains("\\036HINTSHELL"));
+        assert!(hook.contains("PS2=$'\\033]5522;hintshell_continuation\\007'"));
+        // The gate is the wrapper's one-shot token, which the child consumes. Keying it on
+        // the inherited live flag made nested shells print unfiltered markers as garbage.
+        assert!(hook.contains("if [[ -n \"${HINTSHELL_MARKER_TOKEN:-}\" ]]; then unset HINTSHELL_MARKER_TOKEN; _hintshell_markers_owned=1; fi"));
+        assert!(hook.contains("if [[ -n \"${_hintshell_markers_owned:-}\" ]]; then"));
+        assert!(!hook.contains("if [[ -n \"${HINTSHELL_LIVE_BASH:-}\" ]]; then"));
+        assert!(!hook.contains("\\036"));
     }
 
     #[test]

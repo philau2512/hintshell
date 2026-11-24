@@ -121,6 +121,9 @@ enum Commands {
 
     /// Update HintShell to the latest version
     Update,
+
+    /// Show the effective interface configuration and report anything it ignores
+    Config,
 }
 
 #[derive(Subcommand)]
@@ -228,10 +231,14 @@ async fn main() {
                                 println!("{}", s.command);
                             }
                         } else if format == "fzf" {
-                            // FZF: full command + frequency (do not truncate command — accept must be exact)
+                            // FZF: full command + advisory metadata (do not truncate command —
+                            // accept must be exact). The risk marker rides in the second field,
+                            // which the picker only ever displays; field 1 is what gets inserted.
                             for s in &suggestions {
                                 let cmd = s.command.replace(['\t', '\n'], " ");
-                                println!("{}\t({}x)", cmd, s.frequency);
+                                let frequency = frequency_column(s.frequency);
+                                let risk = if s.risk == "destructive" { " [!] risky" } else { "" };
+                                println!("{}\t{}{}", cmd, frequency, risk);
                             }
                         } else {
                             // Human readable
@@ -239,12 +246,25 @@ async fn main() {
                                 println!("(no suggestions)");
                             } else {
                                 for (i, s) in suggestions.iter().enumerate() {
+                                    let tag = hintshell_core::engine::matcher::tier_tag(s.tier);
+                                    let label =
+                                        hintshell_core::engine::matcher::source_label(&s.source);
+                                    let risk = if s.risk == "destructive" { " [!] risky" } else { "" };
+                                    let frequency = frequency_column(s.frequency);
                                     println!(
-                                        "  {} {} ({}x)",
+                                        "  {} {}{} [{}]{}{}",
                                         if i == 0 { "→" } else { " " },
                                         s.command,
-                                        s.frequency
+                                        if frequency.is_empty() { String::new() } else { format!(" {frequency}") },
+                                        label,
+                                        if tag.is_empty() { String::new() } else { format!(" {tag}") },
+                                        risk
                                     );
+                                    if let Some(description) = s.description.as_deref() {
+                                        if !description.trim().is_empty() {
+                                            println!("      {description}");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -392,6 +412,26 @@ async fn main() {
                 start_daemon();
             }
             println!("✅ hintshell init complete. Restart shell or re-import module if needed.");
+        }
+        Commands::Config => {
+            // This command is the place to read the warnings, so the loader stays quiet.
+            crate::config::suppress_startup_warnings();
+            let config = crate::config::HintShellConfig::load();
+            println!("◆ hintshell config");
+            println!("   File: {}", crate::config::HintShellConfig::config_path().display());
+            println!("   border_color = {:?}  (frame: {})", config.border_color, config.border_ansi_code().replace('\x1b', "ESC"));
+            println!("   max_visible  = {}", config.max_visible);
+            println!("   ghost_text   = {}", config.ghost_text);
+            println!(
+                "   24-bit colour: {}",
+                if crate::config::supports_truecolor() { "yes (COLORTERM)" } else { "no — gradient presets fall back to 256 colours" }
+            );
+            for warning in config.warnings() {
+                println!("   ⚠ {warning}");
+            }
+            println!("   Palette: {}", crate::config::KNOWN_BORDER_COLORS.join(", "));
+            println!("   Applies to: live Bash/Zsh overlay and the PowerShell module.");
+            println!("   Restart the shell (or re-import the module) after editing this file.");
         }
         Commands::Hook { shell } => {
             let s = shell::Shell::from_str(&shell).expect("Unsupported shell");
@@ -556,6 +596,17 @@ fn current_shell() -> Option<String> {
             .and_then(|name| name.to_str())
             .map(ToOwned::to_owned)
     })
+}
+
+/// Usage counter shared by the CLI formats and the overlays: a contextual candidate has no
+/// history, so printing `(0x)` would present a made-up number as a measurement.
+fn frequency_column(frequency: i64) -> String {
+    let label = hintshell_core::engine::matcher::frequency_label(frequency);
+    if label.is_empty() {
+        String::new()
+    } else {
+        format!("({label})")
+    }
 }
 
 fn start_daemon() {

@@ -129,31 +129,11 @@ function Start-HintShell {
     try { Set-PSReadLineOption -PredictionSource None -ErrorAction SilentlyContinue } catch { }
 
     # 3. Key Bindings
+    # Every chord delegates to a factory in HintShellHandlers.ps1. The module used to carry
+    # a second, slightly different copy of each handler, which is how behaviour fixes drifted.
     $script:HSBoundKeys = @()
 
-    # --- Char handler (a-z, 0-9, symbols) ---
-    $hsCharHandler = {
-        param($key, $arg)
-        if ([datetime]::Now -lt $script:HS.PasteUntil) {
-            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-            [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
-            if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
-            return
-        }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-        if ([Console]::KeyAvailable) {
-            [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
-            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
-            return
-        }
-        [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($key, $arg)
-        if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
-        $bufRef = $null; $curRef = $null
-        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
-        if ("$bufRef" -match '[^\x00-\x7F]') { return }
-        Invoke-HSAutoSuggest
-    }
-
+    $hsCharHandler = Get-HSCharHandler
     foreach ($c in [char[]]([char]'a'..[char]'z')) {
         Set-PSReadLineKeyHandler -Key ([string]$c) -ScriptBlock $hsCharHandler
         $script:HSBoundKeys += ([string]$c)
@@ -171,95 +151,35 @@ function Start-HintShell {
         $script:HSBoundKeys += $c
     }
 
-    # --- Spacebar ---
-    Set-PSReadLineKeyHandler -Key Spacebar -ScriptBlock {
-        if ([datetime]::Now -lt $script:HS.PasteUntil) {
-            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-            [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
-            if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
-            return
-        }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-        [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
-        if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
-        Invoke-HSAutoSuggest
-    }
+    Set-PSReadLineKeyHandler -Key Spacebar   -ScriptBlock (Get-HSSpaceHandler)
+    Set-PSReadLineKeyHandler -Key Backspace  -ScriptBlock (Get-HSBackspaceHandler)
+    Set-PSReadLineKeyHandler -Key Enter      -ScriptBlock (Get-HSEnterHandler)
 
-    # --- Backspace ---
-    Set-PSReadLineKeyHandler -Key Backspace -ScriptBlock {
-        if ([datetime]::Now -lt $script:HS.PasteUntil) {
-            if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-            [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
-            if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500) }
-            return
-        }
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState }
-        [Microsoft.PowerShell.PSConsoleReadLine]::BackwardDeleteChar()
-        if ([Console]::KeyAvailable) { $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500); return }
-        Invoke-HSAutoSuggest
-    }
+    # --- Ctrl+Space: manual trigger, and the way back after Esc ---
+    Set-PSReadLineKeyHandler -Key Ctrl+Spacebar -ScriptBlock (Get-HSManualTriggerHandler)
 
-    # --- Enter ---
-    Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-        if ($script:HS.IsVisible) { Clear-HSOverlay }
-        $bufRef = $null; $curRef = $null
-        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$bufRef, [ref]$curRef)
-        $cmd = "$bufRef"
-        if (Test-HSMultilineBuffer -Typed $cmd) {
-            $script:HS.PasteUntil = [datetime]::Now.AddMilliseconds(500)
-        }
-        Reset-HSState
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        if (-not [string]::IsNullOrWhiteSpace($cmd)) { Invoke-HSRecord -Command $cmd -Asynchronous }
-    }
+    # --- Up/Down: list while it is open, history otherwise ---
+    # One scriptblock for both arrows: the handler reads the direction from the key PSReadLine
+    # passes. A parameterized factory would need a closure, and a closure copies $script:HS.
+    $hsNavigationHandler = Get-HSNavigationHandler
+    Set-PSReadLineKeyHandler -Key UpArrow   -ScriptBlock $hsNavigationHandler
+    Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock $hsNavigationHandler
 
-    # --- Ctrl+Space: manual trigger ---
-    Set-PSReadLineKeyHandler -Key Ctrl+Spacebar -ScriptBlock { Invoke-HSAutoSuggest }
-
-    # --- Up Arrow ---
-    Set-PSReadLineKeyHandler -Key UpArrow -ScriptBlock {
-        if ($script:HS.IsVisible) {
-            $script:HS.SelectedIndex--
-            Update-HSScroll
-            Draw-HSOverlay -Suggestions $script:HS.Suggestions -SelectedIndex $script:HS.SelectedIndex -TypedSoFar $script:HS.CurrentInput
-            return
-        }
-        [Microsoft.PowerShell.PSConsoleReadLine]::PreviousHistory()
-    }
-
-    # --- Down Arrow ---
-    Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock {
-        if ($script:HS.IsVisible) {
-            $script:HS.SelectedIndex++
-            Update-HSScroll
-            Draw-HSOverlay -Suggestions $script:HS.Suggestions -SelectedIndex $script:HS.SelectedIndex -TypedSoFar $script:HS.CurrentInput
-            return
-        }
-        [Microsoft.PowerShell.PSConsoleReadLine]::NextHistory()
-    }
+    # --- RightArrow: accept the inline hint at the end of the line, Alt+Right one word ---
+    $hsHintAcceptHandler = Get-HSHintAcceptHandler
+    Set-PSReadLineKeyHandler -Key RightArrow       -ScriptBlock $hsHintAcceptHandler
+    Set-PSReadLineKeyHandler -Key 'Alt+RightArrow' -ScriptBlock $hsHintAcceptHandler
 
     # --- Tab: accept suggestion ---
-    Set-PSReadLineKeyHandler -Key Tab -ScriptBlock {
-        if ($script:HS.IsVisible) {
-            $sel = $script:HS.Suggestions[$script:HS.SelectedIndex].command
-            Clear-HSOverlay; Reset-HSState
-            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
-            [Microsoft.PowerShell.PSConsoleReadLine]::Insert($sel)
-            return
-        }
-        [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext()
-    }
+    Set-PSReadLineKeyHandler -Key Tab -ScriptBlock (Get-HSTabHandler)
 
-    # --- Escape: close overlay ---
-    Set-PSReadLineKeyHandler -Key Escape -ScriptBlock {
-        if ($script:HS.IsVisible) { Clear-HSOverlay; Reset-HSState; return }
-        [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
-    }
+    # --- Escape: close overlay (sticky for this line) ---
+    Set-PSReadLineKeyHandler -Key Escape -ScriptBlock (Get-HSEscapeHandler)
 
     # Write-Host "✨ HintShell Real-time Auto-Suggest Active:" -ForegroundColor Cyan
     # Write-Host "   Type anything    : Suggestions appear automatically" -ForegroundColor DarkGray
     # Write-Host "   [Up/Down]        : Navigate list" -ForegroundColor DarkGray
-    # Write-Host "   [Tab]            : Accept  |  [Enter]: Run  |  [Esc]: Close" -ForegroundColor DarkGray
+    # Write-Host "   [Tab]            : Accept  |  [Enter]: Run  | [Esc]: Close" -ForegroundColor DarkGray
 }
 
 function Stop-HintShell {
@@ -292,6 +212,8 @@ function Stop-HintShell {
         Set-PSReadLineKeyHandler -Key Tab -Function TabCompleteNext -ErrorAction SilentlyContinue
         Set-PSReadLineKeyHandler -Key UpArrow -Function PreviousHistory -ErrorAction SilentlyContinue
         Set-PSReadLineKeyHandler -Key DownArrow -Function NextHistory -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key RightArrow -Function ForwardChar -ErrorAction SilentlyContinue
+        Set-PSReadLineKeyHandler -Key 'Alt+RightArrow' -Function ForwardWord -ErrorAction SilentlyContinue
         Set-PSReadLineKeyHandler -Key Backspace -Function BackwardDeleteChar -ErrorAction SilentlyContinue
         Set-PSReadLineKeyHandler -Key Spacebar -Function SelfInsert -ErrorAction SilentlyContinue
         Set-PSReadLineKeyHandler -Key Enter -Function AcceptLine -ErrorAction SilentlyContinue

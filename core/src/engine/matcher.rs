@@ -11,6 +11,30 @@ use crate::engine::context::workspace::WorkspaceDetector;
 use crate::engine::context::CommandContext;
 use crate::storage::db::{CommandEntry, HistoryStore, LocalHistoryStats};
 
+/// How much damage a wrong acceptance can do. Surfaced by every shell integration so that
+/// destructive commands are never presented with the same visual weight as read-only ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Risk {
+    Normal,
+    Destructive,
+}
+
+impl Risk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Destructive => "destructive",
+        }
+    }
+}
+
+impl Default for Risk {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suggestion {
     pub command: String,
@@ -18,7 +42,140 @@ pub struct Suggestion {
     pub score: f64,
     pub frequency: i64,
     pub source: String,
+    /// Match quality tier from [`match_tier`]: 0 prefix, 1 contextual, 2 substring,
+    /// 3 typo-tolerant, 4 fuzzy. Integrations use it to explain ranking.
+    #[serde(default)]
+    pub tier: u8,
+    #[serde(default)]
+    pub risk: Risk,
 }
+
+impl Default for Suggestion {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            description: None,
+            score: 0.0,
+            frequency: 0,
+            source: String::new(),
+            tier: 4,
+            risk: Risk::default(),
+        }
+    }
+}
+
+/// Commands whose acceptance can destroy work the user cannot easily recover.
+/// Deliberately narrow: flagging too much makes the marker meaningless.
+const DESTRUCTIVE_PREFIXES: &[&str] = &[
+    "rm -rf",
+    "rm -fr",
+    "rm -r ",
+    "sudo rm",
+    "git reset --hard",
+    "git clean -f",
+    "git checkout --",
+    "git push --force",
+    "git push -f",
+    "git branch -D",
+    "git stash drop",
+    "git filter-branch",
+    "git gc --prune",
+    "docker system prune",
+    "docker rm -f",
+    "docker volume rm",
+    "docker rmi $(docker",
+    "docker rm $(docker",
+    "terraform destroy",
+    "kubectl delete",
+    "helm uninstall",
+    "dd if=",
+    "mkfs",
+    "chmod -R 777",
+    "chown -R",
+    "kill -9",
+    "killall",
+    "pkill",
+    "remove-item -recurse -force",
+    "clear-history",
+    "set-executionpolicy",
+];
+
+/// Flags whose case carries meaning, matched against the command as typed:
+/// `git branch -d` is the safe delete, `git branch -D` discards unmerged work.
+const DESTRUCTIVE_CASE_SENSITIVE: &[&str] = &["git branch -D"];
+
+/// Destructive intent that only shows up later in the line (pipes, suffixes, second command).
+const DESTRUCTIVE_SUBSTRINGS: &[&str] = &[
+    " -delete",
+    "| xargs rm",
+    "&& rm -rf",
+    "; rm -rf",
+    "prune -af",
+    "prune -a ",
+    "--force-with-lease",
+];
+
+pub fn risk_for_command(command: &str) -> Risk {
+    let trimmed = command.trim();
+    if DESTRUCTIVE_CASE_SENSITIVE
+        .iter()
+        .any(|needle| trimmed.starts_with(needle))
+    {
+        return Risk::Destructive;
+    }
+    let compact = trimmed.to_ascii_lowercase().replace('\t', " ");
+    if DESTRUCTIVE_PREFIXES
+        .iter()
+        .any(|prefix| compact.starts_with(prefix))
+        || DESTRUCTIVE_SUBSTRINGS.iter().any(|needle| compact.contains(needle))
+    {
+        return Risk::Destructive;
+    }
+    Risk::Normal
+}
+
+/// Short, user-facing name for where a suggestion came from. Surfaces must not print the
+/// internal source keys ("history-local", "zoxide", …) because they teach nothing.
+pub fn source_label(source: &str) -> &'static str {
+    match source {
+        "history-local" => "here",
+        "history-global" | "history" => "history",
+        "frequent" => "most used",
+        "recent" => "recent",
+        "default" => "starter",
+        "path" => "path",
+        "git" => "git",
+        "npm" | "pnpm" | "yarn" | "bun" => "scripts",
+        "docker" => "docker",
+        "ssh" => "ssh hosts",
+        "zoxide" => "folders",
+        "cargo" => "cargo",
+        _ => "history",
+    }
+}
+
+/// Match-quality tag shown next to the label: "" for a prefix match (what the user typed
+/// actually starts the command), "~" for substring/fuzzy, "≈" for typo tolerance.
+pub fn tier_tag(tier: u8) -> &'static str {
+    match tier {
+        0 | 1 => "",
+        3 => "≈",
+        _ => "~",
+    }
+}
+
+/// Frequency column text; contextual candidates have no usage count, so they show nothing
+/// instead of the invented "1x".
+pub fn frequency_label(frequency: i64) -> String {
+    if frequency > 0 {
+        format!("{frequency}x")
+    } else {
+        String::new()
+    }
+}
+
+/// Shared fallback for the description line so every surface answers the same way.
+pub const NO_DESCRIPTION: &str = "no description";
 
 pub struct SuggestionEngine {
     store: HistoryStore,
@@ -131,6 +288,7 @@ impl SuggestionEngine {
                 } else {
                     "history-global".to_string()
                 },
+                ..Default::default()
             });
         }
 
@@ -175,6 +333,7 @@ impl SuggestionEngine {
                     score: sub_score,
                     frequency: entry.frequency,
                     source,
+                    ..Default::default()
                 });
             } else if entry.frequency >= 3 {
                 popular.push(Suggestion {
@@ -183,6 +342,7 @@ impl SuggestionEngine {
                     score: sub_score,
                     frequency: entry.frequency,
                     source,
+                    ..Default::default()
                 });
             } else {
                 others.push(Suggestion {
@@ -191,6 +351,7 @@ impl SuggestionEngine {
                     score: sub_score,
                     frequency: entry.frequency,
                     source,
+                    ..Default::default()
                 });
             }
         }
@@ -360,11 +521,18 @@ fn merge_suggestions(
                 score: candidate.score,
                 frequency: 0,
                 source: candidate.source,
+                ..Default::default()
             },
         );
     }
 
     let mut suggestions = by_command.into_values().collect::<Vec<_>>();
+    // Publish why each item ranks where it does, and how much damage it can do, so every
+    // surface can explain itself instead of showing an unlabelled list.
+    for suggestion in &mut suggestions {
+        suggestion.tier = match_tier(suggestion, input);
+        suggestion.risk = risk_for_command(&suggestion.command);
+    }
     suggestions.sort_by(|left, right| {
         match_tier(left, input)
             .cmp(&match_tier(right, input))
@@ -475,6 +643,84 @@ mod tests {
     }
 
     #[test]
+    fn merge_publishes_match_tier_and_risk_for_integrations() {
+        let history = vec![
+            Suggestion {
+                command: "git status".to_string(),
+                description: Some("Show the working tree status".to_string()),
+                score: 90.0,
+                frequency: 12,
+                source: "history-global".to_string(),
+                ..Default::default()
+            },
+            Suggestion {
+                command: "git commit -m \"initial\"".to_string(),
+                description: None,
+                score: 40.0,
+                frequency: 2,
+                source: "history-global".to_string(),
+                ..Default::default()
+            },
+            Suggestion {
+                command: "rm -rf build".to_string(),
+                description: None,
+                score: 10.0,
+                frequency: 1,
+                source: "history-global".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let suggestions = merge_suggestions("git s", history.clone(), Vec::new(), 10);
+        let status = suggestions
+            .iter()
+            .find(|suggestion| suggestion.command == "git status")
+            .unwrap();
+        assert_eq!(status.tier, 0, "prefix match must be advertised as tier 0");
+        assert_eq!(status.risk, Risk::Normal);
+
+        let commit = suggestions
+            .iter()
+            .find(|suggestion| suggestion.command.starts_with("git commit"))
+            .unwrap();
+        assert_eq!(commit.tier, 4, "fuzzy-only match must not look like a prefix match");
+
+        // A destructive candidate is ranked by relevance but still flagged for the surface.
+        let suggestions = merge_suggestions("rm -", history, Vec::new(), 10);
+        let rm = suggestions
+            .iter()
+            .find(|suggestion| suggestion.command == "rm -rf build")
+            .unwrap();
+        assert_eq!(rm.risk, Risk::Destructive);
+    }
+
+    #[test]
+    fn source_labels_hide_internal_keys() {
+        assert_eq!(source_label("history-local"), "here");
+        assert_eq!(source_label("zoxide"), "folders");
+        assert_eq!(source_label("something-unknown"), "history");
+        assert_eq!(tier_tag(0), "");
+        assert_eq!(tier_tag(3), "≈");
+        assert_eq!(tier_tag(4), "~");
+        assert_eq!(frequency_label(0), "");
+        assert_eq!(frequency_label(12), "12x");
+    }
+
+    #[test]
+    fn risk_classification_keeps_case_sensitive_and_suffix_signals() {
+        assert_eq!(risk_for_command("git branch -D leftover"), Risk::Destructive);
+        assert_eq!(risk_for_command("git branch -d merged"), Risk::Normal);
+        assert_eq!(risk_for_command("docker system prune -af --volumes"), Risk::Destructive);
+        assert_eq!(
+            risk_for_command("find . -type f -name \"*.log\" -delete"),
+            Risk::Destructive
+        );
+        assert_eq!(risk_for_command("git reset --hard HEAD"), Risk::Destructive);
+        assert_eq!(risk_for_command("git status"), Risk::Normal);
+        assert_eq!(risk_for_command("docker ps -a"), Risk::Normal);
+    }
+
+    #[test]
     fn context_candidates_merge_once_and_do_not_displace_stronger_history() {
         let history = vec![Suggestion {
             command: "npm run dev".to_string(),
@@ -482,6 +728,7 @@ mod tests {
             score: 70.0,
             frequency: 4,
             source: "history-local".to_string(),
+            ..Default::default()
         }];
         let contextual = vec![
             ContextCandidate {
@@ -513,6 +760,7 @@ mod tests {
             score: 50.0,
             frequency: 1,
             source: "history-global".to_string(),
+            ..Default::default()
         }];
         let contextual = vec![ContextCandidate {
             command: "cd src/".to_string(),
@@ -534,6 +782,7 @@ mod tests {
             score: 85.0,
             frequency: 1,
             source: "history-global".to_string(),
+            ..Default::default()
         }];
         let contextual = vec![ContextCandidate {
             command: "cd core/src/engine/".to_string(),
