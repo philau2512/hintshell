@@ -7,19 +7,24 @@
 #![cfg(windows)]
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use conpty::{Process, ProcessOptions};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Top-left corner of the suggestion frame.
 const BOX: &[u8] = "╭".as_bytes();
 
 fn contains_sequence(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.len() >= needle.len() && haystack.windows(needle.len()).any(|window| window == needle)
+    haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 /// Every session here talks to the same daemon and waits on wall-clock rendering, so running
@@ -40,7 +45,11 @@ fn bash_executable() -> Option<PathBuf> {
         }
     }
     let which = Command::new("where").arg("bash.exe").output().ok()?;
-    let first = String::from_utf8_lossy(&which.stdout).lines().next()?.trim().to_string();
+    let first = String::from_utf8_lossy(&which.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .to_string();
     let path = PathBuf::from(first);
     path.exists().then_some(path)
 }
@@ -52,7 +61,7 @@ struct Session {
 }
 
 impl Session {
-    fn start(hook: &PathBuf, _bash: &PathBuf) -> Self {
+    fn start(hook: &Path, _bash: &Path) -> Self {
         // The wrapper resolves Bash itself; the explicit --rcfile keeps the session on the
         // generated hook instead of the user's full profile.
         Self::with_args(&[
@@ -110,7 +119,9 @@ impl Session {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        self.input.write_all(bytes).expect("cannot write keystrokes");
+        self.input
+            .write_all(bytes)
+            .expect("cannot write keystrokes");
         self.input.flush().ok();
     }
 
@@ -180,15 +191,64 @@ fn generated_hook() -> PathBuf {
     path
 }
 
-/// The daemon must answer queries, or the frame legitimately stays empty.
-fn ensure_daemon() {
+/// The daemon answers on one fixed named pipe per machine, and the overlay is empty without
+/// it. Start the binary this very build produced: `hs start` resolves the core executable
+/// from an installed layout that a CI checkout does not have, which silently left every
+/// frame assertion here failing on a runner.
+fn daemon_is_running() -> bool {
     Command::new(env!("CARGO_BIN_EXE_hs"))
-        .arg("start")
+        .arg("status")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains("Daemon is running"))
+        .unwrap_or(false)
+}
+
+// The daemon is deliberately left running after this test process is done: it owns a named
+// pipe shared by every session on the machine, and `Session::drop` is not its lifecycle owner.
+#[allow(clippy::zombie_processes)]
+fn ensure_daemon() {
+    if daemon_is_running() {
+        return;
+    }
+    // Cargo only exports CARGO_BIN_EXE_* for binaries of this package, so the daemon is
+    // found as a sibling of the CLI binary the test profile just built.
+    let core = core_binary().unwrap_or_else(|| {
+        panic!(
+            "no hintshell-core binary next to the test build; run cargo test -p hintshell-core too"
+        )
+    });
+    let mut daemon = Command::new(&core);
+    daemon
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // DETACHED_PROCESS, the same flag `hs start` uses: without it the daemon inherits the
+    // output handle cargo test is reading, so the pipe never closes and the whole test run
+    // blocks after the tests themselves have passed.
+    daemon.creation_flags(0x00000008);
+    daemon
         .spawn()
-        .ok();
-    thread::sleep(Duration::from_millis(600));
+        .unwrap_or_else(|error| panic!("cannot start {}: {error}", core.display()));
+    // An already-healthy daemon keeps the pipe, so this extra instance exits on its own.
+    for _ in 0..50 {
+        if daemon_is_running() {
+            thread::sleep(Duration::from_millis(400));
+            return;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    panic!("the HintShell daemon never answered on its pipe; the overlay has nothing to show");
+}
+
+fn core_binary() -> Option<PathBuf> {
+    let cli = PathBuf::from(env!("CARGO_BIN_EXE_hintshell"));
+    let directory = cli.parent()?;
+    for name in ["hintshell-core.exe", "hintshell-core"] {
+        let candidate = directory.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[test]
@@ -201,7 +261,7 @@ fn ctrl_u_after_typing_still_shows_suggestions_in_a_real_session() {
     let hook = generated_hook();
     ensure_daemon();
 
-    let mut session = Session::start(&hook, &bash);
+    let mut session = Session::start(hook.as_path(), bash.as_path());
 
     assert!(
         session.wait_frame("git st", 3, Duration::from_secs(6)),
@@ -230,7 +290,7 @@ fn ctrl_u_after_accepting_a_suggestion_still_shows_suggestions() {
     let hook = generated_hook();
     ensure_daemon();
 
-    let mut session = Session::start(&hook, &bash);
+    let mut session = Session::start(hook.as_path(), bash.as_path());
 
     assert!(
         session.wait_frame("git st", 3, Duration::from_secs(6)),
@@ -270,7 +330,7 @@ fn ctrl_u_after_accepting_a_suggestion_works_with_the_installed_rcfile() {
     }
     ensure_daemon();
 
-    let mut session = Session::start(&rcfile, &bash);
+    let mut session = Session::start(rcfile.as_path(), bash.as_path());
 
     assert!(
         session.wait_frame("git st", 3, Duration::from_secs(6)),
@@ -301,7 +361,8 @@ fn ctrl_u_after_accepting_a_suggestion_works_in_a_real_login_shell() {
     }
     ensure_daemon();
 
-    let mut session = Session::with_args(&["bash".to_string(), "--login".to_string(), "-i".to_string()]);
+    let mut session =
+        Session::with_args(&["bash".to_string(), "--login".to_string(), "-i".to_string()]);
 
     assert!(
         session.wait_frame("git st", 3, Duration::from_secs(6)),
@@ -326,7 +387,11 @@ fn ctrl_u_after_accepting_a_suggestion_works_in_a_real_login_shell() {
     session.send(b"\x15");
     thread::sleep(Duration::from_millis(200));
     session.type_text("git ");
-    let drawn = session.wait_for(|bytes| contains_sequence(bytes, BOX), from, Duration::from_secs(8));
+    let drawn = session.wait_for(
+        |bytes| contains_sequence(bytes, BOX),
+        from,
+        Duration::from_secs(8),
+    );
     if std::env::var("HINTSHELL_DUMP").is_ok() {
         // Escape-visible tail, for judging whether a frame is drawn and then erased.
         let screen = session.screen.lock().unwrap();
