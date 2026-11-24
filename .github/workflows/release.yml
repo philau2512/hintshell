@@ -57,9 +57,10 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Run CLI tests
-        # hintshell-core is included so its binary exists in the test profile: the ConPTY
-        # overlay tests start a daemon from the build they were compiled with.
-        run: cargo test -p hintshell -p hintshell-core
+        # The daemon is built first because `cargo test -p hintshell-core` only produces a
+        # hashed test harness, while the ConPTY overlay tests need a real hintshell-core
+        # binary to start the suggestion engine from.
+        run: cargo build -p hintshell-core && cargo test -p hintshell -p hintshell-core
 
       - name: Prepare release artifacts (Unix)
         if: runner.os != 'Windows'

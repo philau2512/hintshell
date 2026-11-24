@@ -242,13 +242,24 @@ fn ensure_daemon() {
 fn core_binary() -> Option<PathBuf> {
     let cli = PathBuf::from(env!("CARGO_BIN_EXE_hintshell"));
     let directory = cli.parent()?;
-    for name in ["hintshell-core.exe", "hintshell-core"] {
-        let candidate = directory.join(name);
-        if candidate.exists() {
-            return Some(candidate);
+    let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("target");
+    // Sibling of the CLI binary first, then the plain workspace layouts: a `cargo test` run
+    // puts both in target/debug, while a cross-target build hides the daemon under
+    // target/<triple>/... and an installed daemon is deliberately not used, because the test
+    // would then verify someone else's build.
+    let mut candidates = Vec::new();
+    for directory in [
+        directory.to_path_buf(),
+        workspace_target.join("debug"),
+        workspace_target.join("release"),
+    ] {
+        for name in ["hintshell-core.exe", "hintshell-core"] {
+            candidates.push(directory.join(name));
         }
     }
-    None
+    candidates.into_iter().find(|candidate| candidate.exists())
 }
 
 #[test]
