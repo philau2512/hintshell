@@ -40,6 +40,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run installer tests
+        # Packs and unpacks a release-shaped archive, so the packaging path that
+        # ships these binaries is checked before the build is even spent.
+        run: node --test scripts/npm-install.test.js
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

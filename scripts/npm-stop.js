@@ -24,6 +24,42 @@ function run(command, args, options = {}) {
   }
 }
 
+// A stopped daemon can still hold vendor/*.exe open for a moment, so callers
+// that overwrite binaries need proof the process is gone, not just a kill signal.
+function daemonProcessesAlive() {
+  if (IS_WIN) {
+    const filter = "IMAGENAME eq hintshell-core.exe or IMAGENAME eq hintshell.exe";
+    const result = run("tasklist", ["/FI", filter, "/NH"], { encoding: "utf8", stdio: "pipe" });
+    const listing = `${result && result.stdout ? result.stdout : ""}`.toLowerCase();
+    return listing.includes("hintshell-core.exe") || listing.includes("hintshell.exe");
+  }
+
+  const result = run("pgrep", ["-f", "hintshell-core"], { encoding: "utf8", stdio: "pipe" });
+  return Boolean(result && result.status === 0);
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** @returns {boolean} true once no HintShell process holds the binaries */
+function waitForDaemonExit(timeoutMs = 8000) {
+  if (process.env.HINTSHELL_SKIP_PROCESS_CONTROL === "1") {
+    return true;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!daemonProcessesAlive()) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    sleepSync(250);
+  }
+}
+
 function stopRunningDaemon(reason) {
   console.log(`🛑 Stopping HintShell daemon (${reason})...`);
   if (process.env.HINTSHELL_SKIP_PROCESS_CONTROL === "1") {
@@ -63,4 +99,4 @@ if (require.main === module) {
   stopRunningDaemon("before npm install");
 }
 
-module.exports = { stopRunningDaemon };
+module.exports = { stopRunningDaemon, waitForDaemonExit };
