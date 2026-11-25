@@ -2,6 +2,19 @@
 
 All notable changes to HintShell will be documented in this file.
 
+## [0.4.1] - 2026-11-25
+
+### Improvements & Bug Fixes
+- **npm install no longer depends on one unpacker**: `postinstall` unpacks the Windows release with `System32\tar.exe` (bsdtar) first, then `.NET ZipFile`, then PowerShell 7 and finally Windows PowerShell `Expand-Archive`. On machines where the auto-loaded `Microsoft.PowerShell.Archive` module is broken or blocked by policy, the install previously died with `CouldNotAutoloadMatchingModule`; it now places the binaries regardless. `tar` is resolved by absolute path because Git Bash puts GNU tar first on `PATH`, and GNU tar cannot read a zip.
+- **Extraction is judged by what landed in `vendor/`**: an unpacker that exits `0` but leaves no `hintshell`/`hintshell-core` now falls through to the next one instead of reporting a successful install.
+- **Real lock release before overwrite**: the installer waits until no `hintshell-core.exe`/`hintshell.exe` process survives the daemon stop, and retries extraction once if a lock was still held.
+- **Truncated assets are refused**: the downloaded byte count is compared with `content-length`, and a completion line is printed after the milestone lines, which previously made a 7 MB asset look cut off at "Downloaded 5/7 MB".
+- **Failure advice matches the failure**: a PowerShell module error now points at `Get-Module -ListAvailable Microsoft.PowerShell.Archive` and `Get-ExecutionPolicy -List` instead of sending the user to stop a daemon that was never the problem.
+
+### Testing
+- `scripts/npm-install.test.js` packs a release-shaped archive, poisons `PSModulePath` with a `Microsoft.PowerShell.Archive` copy that cannot load, and asserts that the old single-cmdlet path fails while the shipped chain still installs.
+- The release workflow now runs the installer tests before the build, so a packaging regression cannot ship again.
+
 ## [0.4.0] - 2026-11-24
 
 ### New Features
